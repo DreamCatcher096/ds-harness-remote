@@ -1,0 +1,789 @@
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 0000000..1c81f83
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,10 @@
++# 问答插件最小桥接开发约定
++
++此目录为 `juicesharp/rpiv-mono@ce6d3530410812ca504ec294995581a52170f9e1` 的隔离源码分支，不是生产插件安装。
++中文沟通及新增文档，不用 Markdown 表格。保留许可证和上游归属。
++本轮授权：问答插件 G2 最小补充、冻结依赖安装（跳过生命周期脚本）、无模型契约测试及静态检查。
++禁止改 `/home/allen/pi-web`，不复制其 node_modules/runtime/凭据，不启动 Pi／Pi Web／ACP／SDK 会话，不调用模型，不注册、构建 APK、发布、部署或修改服务。
++安装/检查必须显式设置隔离开发 HOME、XDG 和 npm cache/userconfig，不能继承生产 HOME；生产 .npm 的意外写入不自动清理，见主仓库执行记录。
++锁文件不变；不执行根 check（含全仓自动写入）、prepare、release、version 或 publish。测试仅运行受影响问答包与固定夹具，不跑 real-session 测试。
++公共事件保持 append-only，新桥接使用版本化独立通道。RPC walker 与外部整份提交必须共用权威 first-wins，独立 signal 只关闭自己的问卷，不伪装 TUI，不只删 unsupported_host guard。
++计划、验收及跨仓库来源记录见 `/home/allen/projects/pi-web-remote/docs/pi-web-remote/`。
+diff --git a/packages/rpiv-ask-user-question/answer-channel.ts b/packages/rpiv-ask-user-question/answer-channel.ts
+index 8688548..5b73abf 100644
+--- a/packages/rpiv-ask-user-question/answer-channel.ts
++++ b/packages/rpiv-ask-user-question/answer-channel.ts
+@@ -1,14 +1,17 @@
++import { randomUUID } from "node:crypto";
+ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+ import {
+ 	ASK_USER_ANSWER_EVENT,
+ 	ASK_USER_ANSWER_RESULT_EVENT,
+ 	type AskUserAnswerRejectCode,
+ 	type AskUserAnswerResultEventPayload,
++	type QuestionnaireState,
+ } from "./events.ts";
++import { registerQuestionnaireBridge } from "./questionnaire-bridge.ts";
+ import { resolveExternalAnswer } from "./tool/external-answer.ts";
+ import type { QuestionData, QuestionnaireResult } from "./tool/types.ts";
+ 
+-/** "rpc" while the RPC dialog walker owns the prompts — those cannot be answered from outside. */
++/** 原公共 answer 通道仍拒绝 rpc；版本化桥接与 RPC walker 共用完成控制器。 */
+ export type AnswerHost = "tui" | "rpc";
+ 
+ /**
+@@ -18,6 +21,9 @@ export type AnswerHost = "tui" | "rpc";
+  * wins and a later one is refused instead of reported as applied.
+  */
+ export class OpenQuestionnaire {
++	readonly revision = randomUUID();
++	readonly controller = new AbortController();
++	state: QuestionnaireState = "open";
+ 	private result: QuestionnaireResult | undefined;
+ 	private deliver: ((result: QuestionnaireResult) => void) | undefined;
+ 	private resolveEarly!: (result: QuestionnaireResult) => void;
+@@ -30,6 +36,7 @@ export class OpenQuestionnaire {
+ 		readonly toolCallId: string,
+ 		readonly questions: readonly QuestionData[],
+ 		public host: AnswerHost,
++		private readonly changed: () => void = () => {},
+ 	) {}
+ 
+ 	/** The accepted result, once settled. */
+@@ -43,11 +50,18 @@ export class OpenQuestionnaire {
+ 	}
+ 
+ 	/** First answer wins. False when this questionnaire is already settled. */
+-	settle(result: QuestionnaireResult): boolean {
++	settle(
++		result: QuestionnaireResult,
++		state: Exclude<QuestionnaireState, "open"> = result.cancelled ? "cancelled" : "answered",
++	): boolean {
+ 		if (this.result) return false;
+ 		this.result = result;
++		this.state = state;
++		// 只撤销本问卷的 dialog；undefined 不得覆盖已经决定的整份结果。
++		this.controller.abort();
+ 		if (this.deliver) this.deliver(result);
+ 		else this.resolveEarly(result);
++		this.changed();
+ 		return true;
+ 	}
+ }
+@@ -66,6 +80,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
+  */
+ export function registerAnswerChannel(pi: ExtensionAPI): AnswerChannel {
+ 	const open = new Map<string, OpenQuestionnaire>();
++	const bridge = registerQuestionnaireBridge(pi, open);
+ 
+ 	pi.events.on(ASK_USER_ANSWER_EVENT, (data: unknown) => {
+ 		const payload = isRecord(data) ? data : {};
+@@ -98,11 +113,13 @@ export function registerAnswerChannel(pi: ExtensionAPI): AnswerChannel {
+ 
+ 	return {
+ 		open(toolCallId, questions, host) {
+-			const questionnaire = new OpenQuestionnaire(toolCallId, questions, host);
++			const questionnaire = new OpenQuestionnaire(toolCallId, questions, host, () => bridge.publish(questionnaire));
+ 			open.set(toolCallId, questionnaire);
++			bridge.publish(questionnaire);
+ 			return questionnaire;
+ 		},
+ 		close(questionnaire) {
++			questionnaire.settle({ answers: [], cancelled: true }, "aborted");
+ 			if (open.get(questionnaire.toolCallId) === questionnaire) open.delete(questionnaire.toolCallId);
+ 		},
+ 	};
+diff --git a/packages/rpiv-ask-user-question/ask-user-question.execute.test.ts b/packages/rpiv-ask-user-question/ask-user-question.execute.test.ts
+index 2d27432..3e1711e 100644
+--- a/packages/rpiv-ask-user-question/ask-user-question.execute.test.ts
++++ b/packages/rpiv-ask-user-question/ask-user-question.execute.test.ts
+@@ -99,9 +99,14 @@ describe("ask_user_question.execute — terminal attention", () => {
+ 
+ 			expect(stdout.stdoutWrite).toHaveBeenCalledTimes(1);
+ 			expect(stdout.stdoutWrite).toHaveBeenCalledWith(BEL);
+-			expect(mockEmit).toHaveBeenNthCalledWith(2, "rpiv:ask-user:blocked", { active: true, toolCallId: "tc" });
+-			expect(mockEmit).toHaveBeenNthCalledWith(3, "rpiv:ask-user:blocked", { active: false, toolCallId: "tc" });
+-			expect(mockEmit.mock.invocationCallOrder[1]).toBeLessThan(stdout.stdoutWrite.mock.invocationCallOrder[0]);
++			const blocked = mockEmit.mock.calls.flatMap(([channel, payload], index) =>
++				channel === "rpiv:ask-user:blocked" ? [{ payload, order: mockEmit.mock.invocationCallOrder[index] }] : [],
++			);
++			expect(blocked.map((event) => event.payload)).toEqual([
++				{ active: true, toolCallId: "tc" },
++				{ active: false, toolCallId: "tc" },
++			]);
++			expect(blocked[0]!.order).toBeLessThan(stdout.stdoutWrite.mock.invocationCallOrder[0]);
+ 			expect(stdout.stdoutWrite.mock.invocationCallOrder[0]).toBeLessThan(custom.mock.invocationCallOrder[0]);
+ 		} finally {
+ 			stdout.restore();
+@@ -169,8 +174,14 @@ describe("ask_user_question.execute — terminal attention", () => {
+ 
+ 			expect(result?.details).toMatchObject({ cancelled: false });
+ 			expect(stdout.stdoutWrite).toHaveBeenCalledWith(BEL);
+-			expect(mockEmit).toHaveBeenNthCalledWith(2, "rpiv:ask-user:blocked", { active: true, toolCallId: "tc" });
+-			expect(mockEmit).toHaveBeenNthCalledWith(3, "rpiv:ask-user:blocked", { active: false, toolCallId: "tc" });
++			expect(
++				mockEmit.mock.calls
++					.filter(([channel]) => channel === "rpiv:ask-user:blocked")
++					.map(([, payload]) => payload),
++			).toEqual([
++				{ active: true, toolCallId: "tc" },
++				{ active: false, toolCallId: "tc" },
++			]);
+ 		} finally {
+ 			stdout.restore();
+ 		}
+@@ -399,13 +410,24 @@ describe("ask_user_question.execute — event emission", () => {
+ 			],
+ 		});
+ 
+-		expect(mockEmit).toHaveBeenNthCalledWith(2, "rpiv:ask-user:blocked", { active: true, toolCallId: "tc" });
+-		expect(mockEmit).toHaveBeenNthCalledWith(3, "rpiv:ask-user:blocked", { active: false, toolCallId: "tc" });
+-
+-		// Both start events are emitted before the dialog; the clear follows it.
+-		expect(mockEmit.mock.invocationCallOrder[0]).toBeLessThan(custom.mock.invocationCallOrder[0]);
+-		expect(mockEmit.mock.invocationCallOrder[1]).toBeLessThan(custom.mock.invocationCallOrder[0]);
+-		expect(mockEmit.mock.invocationCallOrder[2]).toBeGreaterThan(custom.mock.invocationCallOrder[0]);
++		const lifecycle = mockEmit.mock.calls.flatMap(([channel, payload], index) =>
++			channel === "rpiv:ask-user:prompt" || channel === "rpiv:ask-user:blocked"
++				? [{ channel, payload, order: mockEmit.mock.invocationCallOrder[index] }]
++				: [],
++		);
++		expect(lifecycle.map((event) => event.channel)).toEqual([
++			"rpiv:ask-user:prompt",
++			"rpiv:ask-user:blocked",
++			"rpiv:ask-user:blocked",
++		]);
++		expect(lifecycle.slice(1).map((event) => event.payload)).toEqual([
++			{ active: true, toolCallId: "tc" },
++			{ active: false, toolCallId: "tc" },
++		]);
++		// 新桥接通道不改变原通道之间与 UI 的先后关系。
++		expect(lifecycle[0]!.order).toBeLessThan(custom.mock.invocationCallOrder[0]);
++		expect(lifecycle[1]!.order).toBeLessThan(custom.mock.invocationCallOrder[0]);
++		expect(lifecycle[2]!.order).toBeGreaterThan(custom.mock.invocationCallOrder[0]);
+ 	});
+ 
+ 	it("clears ask-user blocked lifecycle after cancellation and UI rejection", async () => {
+diff --git a/packages/rpiv-ask-user-question/ask-user-question.ts b/packages/rpiv-ask-user-question/ask-user-question.ts
+index b7f5458..9dbd843 100644
+--- a/packages/rpiv-ask-user-question/ask-user-question.ts
++++ b/packages/rpiv-ask-user-question/ask-user-question.ts
+@@ -25,7 +25,7 @@ import {
+ 	STACKED_OVERLAY_PRESENTATION,
+ 	YIELD_TO_OVERLAY,
+ } from "./presentation.ts";
+-import { type DialogUI, hasDialogUI, runRpcQuestionnaire } from "./rpc-fallback.ts";
++import { type DialogUI, hasDialogUI, runCooperativeRpcQuestionnaire } from "./rpc-fallback.ts";
+ import { displayLabel, t } from "./state/i18n-bridge.ts";
+ import { sentinelsToAppend } from "./state/row-intent.ts";
+ import { normalizeQuestionParams, prepareQuestionArguments } from "./tool/normalize-params.ts";
+@@ -72,13 +72,13 @@ function rejectWithoutUi() {
+ }
+ 
+ /** Sequential native-dialog walker for RPC hosts; brackets it with the blocked-event pair + terminal bell. */
+-async function runRpcPath(pi: ExtensionAPI, ui: DialogUI, typed: QuestionParams, toolCallId: string) {
+-	emitAskUserBlockedEvent(pi, true, toolCallId);
++async function runRpcPath(pi: ExtensionAPI, ui: DialogUI, typed: QuestionParams, open: OpenQuestionnaire) {
++	emitAskUserBlockedEvent(pi, true, open.toolCallId);
+ 	try {
+ 		emitTerminalAttention();
+-		return buildQuestionnaireResponse(await runRpcQuestionnaire(ui, typed), typed);
++		return buildQuestionnaireResponse(await runCooperativeRpcQuestionnaire(ui, typed, open), typed);
+ 	} finally {
+-		emitAskUserBlockedEvent(pi, false, toolCallId);
++		emitAskUserBlockedEvent(pi, false, open.toolCallId);
+ 	}
+ }
+ 
+@@ -338,9 +338,9 @@ async function mountQuestionnaire(config: {
+  * that predate ctx.mode land here: run the dialog walker when the host has the
+  * primitives; otherwise tell the model the user never saw the questions.
+  */
+-async function resolveUndefinedResult(ctx: ExtensionContext, typed: QuestionParams) {
++async function resolveUndefinedResult(ctx: ExtensionContext, typed: QuestionParams, open: OpenQuestionnaire) {
+ 	if (hasDialogUI(ctx.ui)) {
+-		return buildQuestionnaireResponse(await runRpcQuestionnaire(ctx.ui, typed), typed);
++		return buildQuestionnaireResponse(await runCooperativeRpcQuestionnaire(ctx.ui, typed, open), typed);
+ 	}
+ 	return buildToolResult(ERROR_NO_CUSTOM_UI, { answers: [], cancelled: true, error: "no_custom_ui" });
+ }
+@@ -403,12 +403,13 @@ async function runTuiPath(pi: ExtensionAPI, ctx: ExtensionContext, typed: Questi
+ 		}
+ 
+ 		if (result === undefined) {
+-			// The RPC walker takes over; its prompts cannot be answered from outside.
++			// 旧 host 的 custom() 回退也合作接收版本化整份答案。
+ 			open.host = "rpc";
+-			return await resolveUndefinedResult(ctx, typed);
++			return await resolveUndefinedResult(ctx, typed, open);
+ 		}
+ 
+-		return buildQuestionnaireResponse(result, typed);
++		open.settle(result);
++		return buildQuestionnaireResponse(open.settled!, typed);
+ 	} finally {
+ 		presentation?.release?.();
+ 		emitAskUserBlockedEvent(pi, false, open.toolCallId);
+@@ -514,13 +515,19 @@ export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
+ 			const viaRpc = (ctx as { mode?: string }).mode === "rpc" && hasDialogUI(ctx.ui);
+ 			// Open for inbound answers before the prompt goes out: an emitter may answer
+ 			// straight from its prompt listener.
++			_signal?.throwIfAborted();
+ 			const open = answers.open(toolCallId, typed.questions, viaRpc ? "rpc" : "tui");
++			const abort = () => open.settle({ answers: [], cancelled: true }, "aborted");
++			_signal?.addEventListener("abort", abort, { once: true });
++			if (_signal?.aborted) abort();
+ 			try {
+ 				// Emit event for external listeners (e.g., notification plugins)
+ 				emitAskUserPromptEvent(pi, typed, toolCallId);
+-				if (viaRpc) return await runRpcPath(pi, ctx.ui, typed, toolCallId);
+-				return await runTuiPath(pi, ctx, typed, open);
++				const result = viaRpc ? await runRpcPath(pi, ctx.ui, typed, open) : await runTuiPath(pi, ctx, typed, open);
++				_signal?.throwIfAborted();
++				return result;
+ 			} finally {
++				_signal?.removeEventListener("abort", abort);
+ 				answers.close(open);
+ 			}
+ 		},
+diff --git a/packages/rpiv-ask-user-question/docs/minimal-bridge.md b/packages/rpiv-ask-user-question/docs/minimal-bridge.md
+new file mode 100644
+index 0000000..d9fceda
+--- /dev/null
++++ b/packages/rpiv-ask-user-question/docs/minimal-bridge.md
+@@ -0,0 +1,27 @@
++# 完整问卷最小桥接（隔离开发分支）
++
++此补充基于 2.15.0 固定源码，不是已发布版本；没有安装到生产 Pi Web。
++
++## 原通道兼容
++
++原 prompt/blocked/answer/answer-result 语义保留，原 answer 对 RPC 仍为 unsupported_host。增加独立版本化通道：
++
++- rpiv:ask-user:bridge-request.v1：describe、snapshot、submit、cancel、operation.get。
++- rpiv:ask-user:bridge-response.v1：每次请求按 requestId 回答；describe.available=true、snapshot.questionnaires 或 operation。
++- rpiv:ask-user:bridge-state.v1：打开与唯一终态的完整状态投影。问题仅在 open 时附带，包括完整 preview。
++
++类型位于 events.ts。所有 payload 为 JSON-safe；桥接层不得公开任意事件广播。事件总线属于原 SDK 会话；网络鉴权与会话/实例隔离由 Pi Web／Host 完成，不相信客户端自报身份。
++
++## 完成与失效
++
++OpenQuestionnaire.settle 是 TUI、RPC walker、外部整份提交的共同 first-wins；每份调用的独立 signal 只关闭自己的 select/input。网页部分作答是局部草稿，不合并到外部答案。外部获胜后 walker 不再打开下一题。工具 AbortSignal 终结为 aborted，并保持原 abort 异常语义，不伪装用户拒答。
++
++revision 为每次调用独立的 opaque string；它不是题号。submit/cancel 必须带 toolCallId、revision、operationId；答案仍由 resolveExternalAnswer 整份校验（0-based 索引、缺题/越界/重复/空白拒绝、notes/globalNote）。外部空多选被原校验器拒绝，不以 RPC 的显式空答规则放宽。
++
++回执 verdict：accepted、invalid、stale、already-closed、operation-conflict、unknown。HTTP 成功或某题 dialog 关闭都不等于整份答案采纳。operation.get 仅查询，客户端断线后不得自动重发。
++
++相同 revision/operationId 和相同规范化 payload 返回原回执，不同 payload 拒绝冲突；回执在可重入 state listener 前登记。记录只存 payload SHA-256 和回执，不存答案日志。操作记录最多 256、关闭 tombstone 最多 128，10 分钟惰性过期；容量驱逐/过期查询 unknown。插件 reload／进程重启不保持回执，不承诺持久 exactly-once。
++
++## 工程与测试
++
++新增 questionnaire-bridge.ts 已加入包 files，未改包版本或锁文件。固定版本来源、本轮授权、跨源码契约验证与限制由主开发仓库 docs/pi-web-remote/MINIMAL-BRIDGE-ADR.md 和对应执行记录维护。非桥接 RPC 仍使用原逐题 UI；此文不宣称原生 Android 已完成。
+diff --git a/packages/rpiv-ask-user-question/events.ts b/packages/rpiv-ask-user-question/events.ts
+index be3ead1..cc148b2 100644
+--- a/packages/rpiv-ask-user-question/events.ts
++++ b/packages/rpiv-ask-user-question/events.ts
+@@ -130,6 +130,49 @@ export const ASK_USER_ANSWER_RESULT_EVENT = "rpiv:ask-user:answer-result" as con
+  */
+ export type AskUserAnswerRejectCode = "not_found" | "invalid_payload" | "invalid_answer" | "unsupported_host";
+ 
++/** 隔离桥接：原公共 answer 通道保持兼容，RPC 整份提交只经本版本化协议。 */
++export const ASK_USER_BRIDGE_REQUEST_EVENT = "rpiv:ask-user:bridge-request.v1" as const;
++export const ASK_USER_BRIDGE_RESPONSE_EVENT = "rpiv:ask-user:bridge-response.v1" as const;
++export const ASK_USER_BRIDGE_STATE_EVENT = "rpiv:ask-user:bridge-state.v1" as const;
++
++export type QuestionnaireState = "open" | "answered" | "cancelled" | "aborted";
++export interface QuestionnaireSnapshot {
++	toolCallId: string;
++	/** 每次调用独立的 opaque token；不由客户端递增或推断。 */
++	revision: string;
++	state: QuestionnaireState;
++	questions?: ReadonlyArray<{
++		questionIndex: number;
++		question: string;
++		header: string;
++		multiSelect: boolean;
++		options: ReadonlyArray<{ optionIndex: number; label: string; description: string; preview?: string }>;
++	}>;
++}
++export interface QuestionnaireOperation {
++	toolCallId: string;
++	revision: string;
++	operationId: string;
++	verdict: "accepted" | "invalid" | "stale" | "already-closed" | "operation-conflict" | "unknown";
++	state?: QuestionnaireState;
++	code?: string;
++}
++export interface QuestionnaireBridgeRequest {
++	requestId: string;
++	type: "describe" | "snapshot" | "submit" | "cancel" | "operation.get";
++	toolCallId?: string;
++	revision?: string;
++	operationId?: string;
++	answers?: ReadonlyArray<AskUserAnswerEntry>;
++	globalNote?: string;
++}
++export interface QuestionnaireBridgeResponse {
++	requestId: string;
++	available?: boolean;
++	questionnaires?: QuestionnaireSnapshot[];
++	operation?: QuestionnaireOperation;
++}
++
+ export interface AskUserAnswerResultEventPayload {
+ 	ok: boolean;
+ 	/** Set when `ok` is false. */
+diff --git a/packages/rpiv-ask-user-question/package.json b/packages/rpiv-ask-user-question/package.json
+index e0a64b9..27b59bc 100644
+--- a/packages/rpiv-ask-user-question/package.json
++++ b/packages/rpiv-ask-user-question/package.json
+@@ -31,6 +31,7 @@
+ 	},
+ 	"files": [
+ 		"answer-channel.ts",
++		"questionnaire-bridge.ts",
+ 		"ask-user-question.ts",
+ 		"rpc-fallback.ts",
+ 		"config.ts",
+diff --git a/packages/rpiv-ask-user-question/questionnaire-bridge.test.ts b/packages/rpiv-ask-user-question/questionnaire-bridge.test.ts
+new file mode 100644
+index 0000000..511c420
+--- /dev/null
++++ b/packages/rpiv-ask-user-question/questionnaire-bridge.test.ts
+@@ -0,0 +1,217 @@
++import { createEventBus } from "@earendil-works/pi-coding-agent";
++import { createMockCtx, createMockPi } from "@juicesharp/rpiv-test-utils";
++import { describe, expect, it, vi } from "vitest";
++import { registerAskUserQuestionTool } from "./ask-user-question.ts";
++import type { AskUserAnswerEntry, QuestionnaireBridgeResponse, QuestionnaireSnapshot } from "./events.ts";
++
++const REQUEST = "rpiv:ask-user:bridge-request.v1";
++const RESPONSE = "rpiv:ask-user:bridge-response.v1";
++const STATE = "rpiv:ask-user:bridge-state.v1";
++const question = (header: string, multiSelect = false) => ({
++	question: `${header}?`,
++	header,
++	multiSelect,
++	options: [
++		{ label: "A", description: "a", preview: "**A**" },
++		{ label: "B", description: "b" },
++	],
++});
++
++function harness() {
++	const bus = createEventBus();
++	const { pi, captured } = createMockPi({ events: bus } as never);
++	registerAskUserQuestionTool(pi);
++	const dialogs: Array<{ options?: string[]; answer: (value: string | undefined) => void; signal?: AbortSignal }> = [];
++	const states: QuestionnaireSnapshot[] = [];
++	bus.on(STATE, (state) => states.push(state as QuestionnaireSnapshot));
++	const show = (options?: string[], signal?: AbortSignal) =>
++		new Promise<string | undefined>((resolve) => {
++			dialogs.push({ options, answer: resolve, signal });
++			if (signal?.aborted) resolve(undefined);
++			else signal?.addEventListener("abort", () => resolve(undefined), { once: true });
++		});
++	const ui = {
++		select: vi.fn((_title: string, options: string[], opts?: { signal?: AbortSignal }) =>
++			show(options, opts?.signal),
++		),
++		input: vi.fn((_title: string, _placeholder?: string, opts?: { signal?: AbortSignal }) =>
++			show(undefined, opts?.signal),
++		),
++	};
++	const ctx = createMockCtx({ hasUI: true, mode: "rpc", ui: ui as never });
++	const run = (id = "call", questions = [question("One")], signal?: AbortSignal) =>
++		captured.tools.get("ask_user_question")!.execute(id, { questions }, signal!, undefined, ctx as never);
++	let seq = 0;
++	const request = (payload: Record<string, unknown>) => {
++		const requestId = `request-${++seq}`;
++		let result: QuestionnaireBridgeResponse | undefined;
++		const off = bus.on(RESPONSE, (data) => {
++			const response = data as QuestionnaireBridgeResponse;
++			if (response.requestId === requestId) result = response;
++		});
++		bus.emit(REQUEST, { ...payload, requestId });
++		off();
++		expect(result).toBeDefined();
++		return result!;
++	};
++	const ref = (id = "call") => request({ type: "snapshot" }).questionnaires!.find((q) => q.toolCallId === id)!;
++	const submit = (
++		q: QuestionnaireSnapshot,
++		operationId = "op",
++		answers: readonly AskUserAnswerEntry[] = [{ questionIndex: 0, optionIndexes: [1] }],
++	) => request({ type: "submit", toolCallId: q.toolCallId, revision: q.revision, operationId, answers }).operation!;
++	return { bus, run, request, ref, submit, dialogs, states, ui };
++}
++
++const tick = () => new Promise((resolve) => setImmediate(resolve));
++
++describe("版本化 RPC 完整问卷桥接", () => {
++	it("导出完整 preview；外部完成只关闭自己的 RPC UI，原工具返回一次", async () => {
++		const h = harness();
++		const done = h.run();
++		const other = h.run("other");
++		const q = h.ref();
++		expect(q.questions![0].options[0].preview).toBe("**A**");
++		expect(h.request({ type: "describe" }).available).toBe(true);
++		expect(h.submit(q).verdict).toBe("accepted");
++		expect((await done).details).toMatchObject({ cancelled: false, answers: [{ answer: "B" }] });
++		expect(h.dialogs[0].signal?.aborted).toBe(true);
++		expect(h.dialogs[1].signal?.aborted).toBe(false);
++		expect(h.request({ type: "snapshot" }).questionnaires!.map((x) => x.toolCallId)).toEqual(["other"]);
++		h.request({ type: "cancel", ...h.ref("other"), operationId: "cancel" });
++		await other;
++		expect(h.states.filter((s) => s.toolCallId === "call").map((s) => s.state)).toEqual(["open", "answered"]);
++	});
++
++	it("网页部分作答后整份外部提交胜出，不打开后续题；回执可查询与幂等", async () => {
++		const h = harness();
++		const done = h.run("call", [question("One"), question("Two", true), question("Three")]);
++		h.dialogs[0].answer(h.dialogs[0].options![0]);
++		await tick();
++		const q = h.ref();
++		const answers = [
++			{ questionIndex: 0, optionIndexes: [1] },
++			{ questionIndex: 1, optionIndexes: [0, 1], text: "custom", notes: "note" },
++			{ questionIndex: 2, text: "free" },
++		];
++		const accepted = h.submit(q, "op", answers);
++		expect(h.submit(q, "op", answers)).toEqual(accepted);
++		expect(h.submit(q, "op").verdict).toBe("operation-conflict");
++		expect(h.request({ type: "operation.get", ...q, operationId: "op" }).operation).toEqual(accepted);
++		expect((await done).details).toMatchObject({
++			answers: [{ answer: "B" }, { selected: ["A", "B"], answer: "custom", notes: "note" }, { answer: "free" }],
++		});
++		expect(h.dialogs).toHaveLength(2);
++		expect(h.submit(q, "late").verdict).toBe("already-closed");
++	});
++
++	it("网页先完成及显式取消与答案竞争，只有首个终态", async () => {
++		const h = harness();
++		const done = h.run();
++		const q = h.ref();
++		h.dialogs[0].answer(h.dialogs[0].options![0]);
++		await done;
++		expect(h.submit(q).verdict).toBe("already-closed");
++		const cancelled = h.run("cancel");
++		const c = h.ref("cancel");
++		expect(h.request({ type: "cancel", ...c, operationId: "c" }).operation).toMatchObject({
++			verdict: "accepted",
++			state: "cancelled",
++		});
++		expect(h.submit(c).verdict).toBe("already-closed");
++		expect((await cancelled).details).toMatchObject({ cancelled: true });
++	});
++
++	it("同 tick 最后一题与外部整份提交竞争，以控制器的第一次决胜为准", async () => {
++		const h = harness();
++		const done = h.run();
++		const q = h.ref();
++		h.dialogs[0].answer(h.dialogs[0].options![0]);
++		// walker 的 await 尚未恢复，局部选择还不是完成整份问卷。
++		expect(h.submit(q).verdict).toBe("accepted");
++		expect((await done).details).toMatchObject({ answers: [{ answer: "B" }] });
++		expect(h.states.filter((s) => s.state !== "open")).toHaveLength(1);
++	});
++
++	it("state listener 同步重入查询不会观察 accepted 尚未登记的窗口", async () => {
++		const h = harness();
++		const done = h.run();
++		const q = h.ref();
++		let replay: unknown;
++		h.bus.on(STATE, (value) => {
++			if ((value as QuestionnaireSnapshot).state === "answered") replay = h.submit(q);
++		});
++		const accepted = h.submit(q);
++		expect(replay).toEqual(accepted);
++		await done;
++	});
++
++	it("非法答案、旧 revision 与未知问卷不消费原调用", async () => {
++		const h = harness();
++		const done = h.run();
++		const q = h.ref();
++		for (const answers of [
++			[],
++			[{ questionIndex: 0, optionIndexes: [9] }],
++			[{ questionIndex: 0, text: " " }],
++			[{ questionIndex: 0, optionIndexes: [] }],
++		]) {
++			expect(h.submit(q, JSON.stringify(answers), answers).verdict).toBe("invalid");
++		}
++		expect(h.submit({ ...q, revision: "old" }).verdict).toBe("stale");
++		expect(h.submit({ ...q, toolCallId: "missing" }).verdict).toBe("stale");
++		expect(h.ui.select).toHaveBeenCalledTimes(1);
++		h.submit(q, "valid");
++		await done;
++	});
++
++	it("工具 AbortSignal 产生 aborted 而非 accepted/decline，关闭 UI", async () => {
++		const h = harness();
++		const controller = new AbortController();
++		const done = h.run("call", undefined, controller.signal);
++		const rejected = expect(done).rejects.toMatchObject({ name: "AbortError" });
++		const q = h.ref();
++		controller.abort();
++		await rejected;
++		expect(h.states.at(-1)).toMatchObject({ state: "aborted" });
++		expect(h.dialogs[0].signal?.aborted).toBe(true);
++		expect(h.submit(q).verdict).toBe("already-closed");
++	});
++
++	it("回执过期后 unknown；重开同 toolCallId 使用不同 revision", async () => {
++		const h = harness();
++		const done = h.run();
++		const q = h.ref();
++		h.submit(q);
++		await done;
++		const now = Date.now();
++		vi.spyOn(Date, "now").mockReturnValue(now + 600_001);
++		expect(h.request({ type: "operation.get", ...q, operationId: "op" }).operation!.verdict).toBe("unknown");
++		expect(h.submit(q).verdict).toBe("stale");
++		const again = h.run();
++		const newer = h.ref();
++		expect(newer.revision).not.toBe(q.revision);
++		expect(h.submit(q).verdict).toBe("stale");
++		h.submit(newer);
++		await again;
++	});
++
++	it("容量驱逐不重开问卷：操作 256、关闭记录 128 的边界", async () => {
++		const h = harness();
++		const done = h.run();
++		const q = h.ref();
++		for (let i = 0; i < 257; i++) h.submit(q, `bad-${i}`, []);
++		expect(h.request({ type: "operation.get", ...q, operationId: "bad-0" }).operation!.verdict).toBe("unknown");
++		h.submit(q);
++		await done;
++		for (let i = 0; i < 129; i++) {
++			const next = h.run(`next-${i}`);
++			h.submit(h.ref(`next-${i}`));
++			await next;
++		}
++		// 先返回仍保留的原 accepted；终态驱逐并不使旧答案再次执行。
++		expect(h.submit(q).verdict).toBe("accepted");
++		expect(h.submit(q, "late").verdict).toBe("stale");
++		expect(h.request({ type: "snapshot" }).questionnaires).toEqual([]);
++	});
++});
+diff --git a/packages/rpiv-ask-user-question/questionnaire-bridge.ts b/packages/rpiv-ask-user-question/questionnaire-bridge.ts
+new file mode 100644
+index 0000000..9e92cfa
+--- /dev/null
++++ b/packages/rpiv-ask-user-question/questionnaire-bridge.ts
+@@ -0,0 +1,129 @@
++import { createHash } from "node:crypto";
++import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
++import type { OpenQuestionnaire } from "./answer-channel.ts";
++import {
++	ASK_USER_BRIDGE_REQUEST_EVENT,
++	ASK_USER_BRIDGE_RESPONSE_EVENT,
++	ASK_USER_BRIDGE_STATE_EVENT,
++	type QuestionnaireBridgeResponse,
++	type QuestionnaireOperation,
++	type QuestionnaireSnapshot,
++} from "./events.ts";
++import { resolveExternalAnswer } from "./tool/external-answer.ts";
++
++const RETAIN_MS = 600_000;
++const MAX_OPERATIONS = 256;
++const MAX_CLOSED = 128;
++const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
++const identifier = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 128;
++
++function canonical(value: unknown): string {
++	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
++	if (record(value))
++		return `{${Object.keys(value)
++			.sort()
++			.map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
++			.join(",")}}`;
++	return JSON.stringify(value) ?? "null";
++}
++
++function snapshot(q: OpenQuestionnaire): QuestionnaireSnapshot {
++	return {
++		toolCallId: q.toolCallId,
++		revision: q.revision,
++		state: q.state,
++		...(q.state === "open"
++			? {
++					questions: q.questions.map((question, questionIndex) => ({
++						questionIndex,
++						question: question.question,
++						header: question.header,
++						multiSelect: question.multiSelect ?? false,
++						options: question.options.map((option, optionIndex) => ({ ...option, optionIndex })),
++					})),
++				}
++			: {}),
++	};
++}
++
++/** 有界、仅内存的原控制器回执。不保留答案正文，不承诺跨 reload／进程恢复。 */
++export function registerQuestionnaireBridge(pi: ExtensionAPI, open: ReadonlyMap<string, OpenQuestionnaire>) {
++	const operations = new Map<string, { at: number; fingerprint: string; operation: QuestionnaireOperation }>();
++	const closed = new Map<string, { at: number; value: QuestionnaireSnapshot }>();
++	const prune = () => {
++		const now = Date.now();
++		for (const [key, value] of operations) if (now - value.at >= RETAIN_MS) operations.delete(key);
++		for (const [key, value] of closed) if (now - value.at >= RETAIN_MS) closed.delete(key);
++	};
++	const trim = <T>(map: Map<string, T>, limit: number) => {
++		while (map.size > limit) map.delete(map.keys().next().value!);
++	};
++
++	pi.events.on(ASK_USER_BRIDGE_REQUEST_EVENT, (data: unknown) => {
++		if (!record(data) || !identifier(data.requestId)) return;
++		prune();
++		const reply = (body: Omit<QuestionnaireBridgeResponse, "requestId">) =>
++			pi.events.emit(ASK_USER_BRIDGE_RESPONSE_EVENT, { ...body, requestId: data.requestId });
++		if (data.type === "describe") return reply({ available: true });
++		if (data.type === "snapshot") {
++			return reply({ questionnaires: [...open.values()].filter((q) => !q.settled).map(snapshot) });
++		}
++		const toolCallId = typeof data.toolCallId === "string" ? data.toolCallId : "";
++		const revision = typeof data.revision === "string" ? data.revision : "";
++		const operationId = typeof data.operationId === "string" ? data.operationId : "";
++		const base = { toolCallId, revision, operationId };
++		const verdict = (value: QuestionnaireOperation["verdict"], code?: string) =>
++			reply({ operation: { ...base, verdict: value, ...(code ? { code } : {}) } });
++		if (![toolCallId, revision, operationId].every(identifier)) return verdict("invalid", "invalid_ref");
++		const key = JSON.stringify([toolCallId, revision, operationId]);
++		const previous = operations.get(key);
++		if (data.type === "operation.get")
++			return reply({ operation: previous?.operation ?? { ...base, verdict: "unknown" } });
++		if (data.type !== "submit" && data.type !== "cancel") return verdict("invalid", "invalid_type");
++		const fingerprint = createHash("sha256")
++			.update(
++				canonical({
++					type: data.type,
++					answers: data.answers,
++					globalNote: data.globalNote,
++				}),
++			)
++			.digest("hex");
++		if (previous) {
++			return previous.fingerprint === fingerprint
++				? reply({ operation: previous.operation })
++				: verdict("operation-conflict");
++		}
++		const target = open.get(toolCallId);
++		const tombstone = closed.get(JSON.stringify([toolCallId, revision]))?.value;
++		if ((!target || target.revision !== revision) && !tombstone) return verdict("stale");
++		if (!target || target.revision !== revision || target.settled) {
++			return reply({ operation: { ...base, verdict: "already-closed", state: tombstone?.state ?? target?.state } });
++		}
++		const outcome = resolveExternalAnswer(target.questions, {
++			answers: data.answers,
++			globalNote: data.globalNote,
++			cancel: data.type === "cancel",
++		});
++		const operation: QuestionnaireOperation = outcome.ok
++			? { ...base, verdict: "accepted", state: outcome.result.cancelled ? "cancelled" : "answered" }
++			: { ...base, verdict: "invalid", code: outcome.code, state: "open" };
++		// 在任何同步 state listener 可以重入之前登记回执，再完成原调用。
++		operations.set(key, { at: Date.now(), fingerprint, operation });
++		trim(operations, MAX_OPERATIONS);
++		if (outcome.ok) target.settle(outcome.result);
++		reply({ operation });
++	});
++
++	return {
++		publish(q: OpenQuestionnaire) {
++			prune();
++			const value = snapshot(q);
++			if (q.settled) {
++				closed.set(JSON.stringify([q.toolCallId, q.revision]), { at: Date.now(), value });
++				trim(closed, MAX_CLOSED);
++			}
++			pi.events.emit(ASK_USER_BRIDGE_STATE_EVENT, value);
++		},
++	};
++}
+diff --git a/packages/rpiv-ask-user-question/rpc-fallback.test.ts b/packages/rpiv-ask-user-question/rpc-fallback.test.ts
+index dc653b7..76d4eb7 100644
+--- a/packages/rpiv-ask-user-question/rpc-fallback.test.ts
++++ b/packages/rpiv-ask-user-question/rpc-fallback.test.ts
+@@ -124,9 +124,14 @@ describe("ask_user_question.execute — RPC dialog walker (ctx.mode === 'rpc')",
+ 
+ 			expect(stdout.stdoutWrite).toHaveBeenCalledTimes(1);
+ 			expect(stdout.stdoutWrite).toHaveBeenCalledWith(BEL);
+-			expect(mockEmit).toHaveBeenNthCalledWith(2, "rpiv:ask-user:blocked", { active: true, toolCallId: "tc" });
+-			expect(mockEmit).toHaveBeenNthCalledWith(3, "rpiv:ask-user:blocked", { active: false, toolCallId: "tc" });
+-			expect(mockEmit.mock.invocationCallOrder[1]).toBeLessThan(stdout.stdoutWrite.mock.invocationCallOrder[0]);
++			const blocked = mockEmit.mock.calls.flatMap(([channel, payload], index) =>
++				channel === "rpiv:ask-user:blocked" ? [{ payload, order: mockEmit.mock.invocationCallOrder[index] }] : [],
++			);
++			expect(blocked.map((event) => event.payload)).toEqual([
++				{ active: true, toolCallId: "tc" },
++				{ active: false, toolCallId: "tc" },
++			]);
++			expect(blocked[0]!.order).toBeLessThan(stdout.stdoutWrite.mock.invocationCallOrder[0]);
+ 			expect(stdout.stdoutWrite.mock.invocationCallOrder[0]).toBeLessThan(select.mock.invocationCallOrder[0]);
+ 		} finally {
+ 			stdout.restore();
+diff --git a/packages/rpiv-ask-user-question/rpc-fallback.ts b/packages/rpiv-ask-user-question/rpc-fallback.ts
+index 7d61d0b..7f76ec5 100644
+--- a/packages/rpiv-ask-user-question/rpc-fallback.ts
++++ b/packages/rpiv-ask-user-question/rpc-fallback.ts
+@@ -18,6 +18,7 @@
+  * option numbers, custom text, or both separated by a semicolon.
+  */
+ 
++import type { OpenQuestionnaire } from "./answer-channel.ts";
+ import { displayLabel, t } from "./state/i18n-bridge.ts";
+ import type { QuestionAnswer, QuestionData, QuestionnaireResult, QuestionParams } from "./tool/types.ts";
+ 
+@@ -42,8 +43,8 @@ const MAX_PREVIEW_CHARS = 600;
+  * gate that makes the shape trustworthy.
+  */
+ export type DialogUI = {
+-	select: (title: string, options: string[]) => Promise<string | undefined>;
+-	input: (title: string, placeholder?: string) => Promise<string | undefined>;
++	select: (title: string, options: string[], opts?: { signal?: AbortSignal }) => Promise<string | undefined>;
++	input: (title: string, placeholder?: string, opts?: { signal?: AbortSignal }) => Promise<string | undefined>;
+ };
+ 
+ /** True when the host implements the select/input dialog primitives. */
+@@ -97,6 +98,33 @@ export async function runRpcQuestionnaire(ui: DialogUI, params: QuestionParams):
+ 	return { answers, cancelled: false };
+ }
+ 
++/** 网页与外部整份答案只通过原 first-wins；独立 signal 不触碰其他调用。 */
++export async function runCooperativeRpcQuestionnaire(
++	ui: DialogUI,
++	params: QuestionParams,
++	open: OpenQuestionnaire,
++): Promise<QuestionnaireResult> {
++	const signal = open.controller.signal;
++	const scoped: DialogUI = {
++		select: async (title, options) => {
++			if (signal.aborted) return undefined;
++			const value = await ui.select(title, options, { signal });
++			return signal.aborted ? undefined : value;
++		},
++		input: async (title, placeholder) => {
++			if (signal.aborted) return undefined;
++			const value = await ui.input(title, placeholder, { signal });
++			return signal.aborted ? undefined : value;
++		},
++	};
++	if (open.settled) return open.settled;
++	const walking = runRpcQuestionnaire(scoped, params).then((result) => {
++		open.settle(result);
++		return open.settled!;
++	});
++	return await Promise.race([walking, open.answeredEarly]);
++}
++
+ /**
+  * `undefined` means the user dismissed the option dialog (cancel the questionnaire).
+  *

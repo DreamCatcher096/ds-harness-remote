@@ -1,0 +1,760 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 59c69a4..33974af 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,11 @@
++# Pi Web 最小桥接开发约定
++
++此目录为 Pi Web `174bff967807cdb59abb0204198d3d7cc19c862d` 的隔离开发分支，非生产安装。中文沟通及新增文档，不用 Markdown 表格。
++本轮授权实现 G1（attach-only／实例校验）与 G2（完整问卷桥接），允许冻结依赖安装（跳过生命周期脚本）及无模型契约测试。
++禁止启动 Pi Web／Pi／ACP／模型会话，禁止修改 `/home/allen/pi-web`、运行配置、凭据、会话或服务；不做模型测试、APK、账号操作、发布或部署。
++不复制生产 node_modules/runtime，不写 session JSONL，不运行上游全仓自动修复、release、dev、start 或 build。锁文件保持冻结。只读参考 SDK 类型／文档可用。安装/检查必须显式设置隔离开发 HOME、XDG 和 npm cache/userconfig，禁止继承工具进程的生产 HOME；生产 .npm 的意外写入不自动清理，见主仓库执行记录。
++上游说明保留如下，涉及启动、升级或生产操作的建议不构成本轮授权。项目实施与验收见 `/home/allen/projects/pi-web-remote/docs/pi-web-remote/`。
++
+ # Pi Web - Development Notes
+ 
+ ## Quick Start
+diff --git a/app/api/remote/[id]/events/route.ts b/app/api/remote/[id]/events/route.ts
+new file mode 100644
+index 0000000..0525b04
+--- /dev/null
++++ b/app/api/remote/[id]/events/route.ts
+@@ -0,0 +1,23 @@
++import { createAgentEventStream } from "@/lib/agent-event-stream";
++import { attachRpcSession } from "@/lib/rpc-manager";
++import { remoteFailure } from "@/lib/remote-http";
++import { remoteError } from "@/lib/remote-questionnaire";
++
++export const dynamic = "force-dynamic";
++
++export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
++  const { id } = await params;
++  if (req.signal.aborted) return new Response(null, { status: 204 });
++  try {
++    const instance = new URL(req.url).searchParams.get("agentInstanceId");
++    if (!instance) throw remoteError("instance-required", 400);
++    const session = attachRpcSession(id, instance);
++    const stream = createAgentEventStream(req, id, Promise.resolve(session), {
++      remote: { agentInstanceId: instance, snapshot: () => session.getRemoteSnapshot() },
++    });
++    return new Response(stream, { headers: {
++      "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform",
++      Connection: "keep-alive", "X-Accel-Buffering": "no",
++    } });
++  } catch (error) { return remoteFailure(error); }
++}
+diff --git a/app/api/remote/[id]/route.ts b/app/api/remote/[id]/route.ts
+new file mode 100644
+index 0000000..742aaad
+--- /dev/null
++++ b/app/api/remote/[id]/route.ts
+@@ -0,0 +1,22 @@
++import { attachRpcSession } from "@/lib/rpc-manager";
++import { readRemoteCommand, remoteFailure, remoteJson } from "@/lib/remote-http";
++import { remoteError } from "@/lib/remote-questionnaire";
++
++export const dynamic = "force-dynamic";
++
++export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
++  const { id } = await params;
++  try { return remoteJson(attachRpcSession(id).getRemoteSnapshot()); }
++  catch (error) { return remoteFailure(error); }
++}
++
++export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
++  const { id } = await params;
++  try {
++    const command = await readRemoteCommand(req);
++    req.signal.throwIfAborted();
++    if (typeof command.agentInstanceId !== "string" || !command.agentInstanceId) throw remoteError("instance-required", 400);
++    // 读 body 是最后一个 await；查找、实例校验与业务效果在同一同步边界。
++    return remoteJson(attachRpcSession(id, command.agentInstanceId).remoteCommand(command));
++  } catch (error) { return remoteFailure(error); }
++}
+diff --git a/docs/agents/sessions.md b/docs/agents/sessions.md
+index d367719..eb4cc73 100644
+--- a/docs/agents/sessions.md
++++ b/docs/agents/sessions.md
+@@ -321,3 +321,13 @@ Files: `lib/markdown.ts` (`markdownClobberPrefix`, `rehypeMatchClobberedIds`, `j
+ - Code fences (`CodeBlock`, `components/MermaidBlock.tsx`): Prism tokenizes in the render, about 5-10 ms per 1,000 characters of TypeScript on a desktop. Within one task the first 2,000 characters of fences are highlighted at once (`takeHighlightBudget()`); the others render through the same `SyntaxHighlighter` as `text` (same lines, numbers and box, no tokens) and take their language one per idle slice, newest first (`waitForHighlight()`; Safari has no `requestIdleCallback` and waits 50 ms). Opening a session with 86 fences at 4x CPU throttling, the commit that shows the messages went from 1.1 s to 0.66 s; the end of a streamed reply gets the same budget. `codeTagProps` sets no class, so tell a highlighted fence by its `span.token` elements, not by a `language-*` class. Fences wrap long lines, as pi's TUI does (no toggle; #1360): `renderCodeLines()` makes each line a flex row of its number and its text (`.markdown-code-line`, `overflow-wrap: anywhere` for URLs and paths), so a wrapped line goes on under its text, the text keeping the row's classes (the later lines of a block comment take their color from them), and an extension dialog measures its fences unwrapped (`.extension-dialog-measuring`) so it still widens to show them whole where the screen allows (#947). The visible number is generated from the gutter's `data-line-number`, not a text node: WebKit (Safari, every iOS browser) otherwise paints the numbers a selection crosses despite `user-select: none` and puts them in `getSelection().toString()`; Chromium did neither. The file viewer's Source view still has text-node numbers.
+ - While streaming, a fence's plain `<pre>` holds its text in 64-line pieces (`StreamingCodeChunks`), the same idea as long thinking (#1248): only the last piece changes per chunk, so React rewrites one short text node and the browser lays out one piece; finished pieces are `content-visibility: auto`, skipped while off screen. The newline between pieces is the block boundary, not text: kept in a piece, a copied selection got a blank line at every boundary.
+ - Prism languages load on demand (`lib/prism-languages.ts`, `hooks/usePrismLanguages.ts`). `CodeBlock` and `FileViewer` render with `react-syntax-highlighter/dist/esm/prism-light` (refractor's core), never the package index: its `Prism` imports `refractor/all`, which registers about 300 languages when evaluated, ~650 ms of the first `AppShell` render at 4x CPU throttling on every page load, code on screen or not. The first highlighter to mount imports `refractor/all` as a chunk of its own; it registers into the same core instance, so every language and alias works as before. Until then fences render as `text` and files as `plaintext` (same lines, numbers and box). A page with no code never loads it. Client code imports only types from `react-syntax-highlighter` itself.
++
++## 最小桥接分支：只附着与完整问卷
++
++`/api/remote/[id]` GET 同步读取 registry 中 alive 的原 wrapper；POST 仅允许 questionnaire.submit/cancel、operation.get 和普通 ui.respond。`/events` 必须带 agentInstanceId；旧 agent 路由的创建/恢复行为不变，不能给新 Host 混用。新入口受原 proxy 的认证与来源规则保护，instanceId 不是密码，不是公网准入方案。
++
++wrapper 的实例 ID 在生命周期内稳定；POST 读完有界 body 后才查 registry，remoteCommand 在同一同步边界校验 session/instance、执行原控制器。SSE 先注册 listener 再读问卷 snapshot；新流帧带 instance、epoch/seq，重连只重建投影，不自动提交。既有增量合并/背压仍有效，不承诺持久游标或历史无缺口；关闭给 attachment_ended，不转去 startRpcSession。
++
++每个原 ResourceLoader 显式注入独立 SDK EventBus；`remote-questionnaire.ts` 只转发 rpiv 的版本化桥接协议，不导出通用 emit。只有新版插件同步握手/快照成功才声明 pi-web.questionnaire.v1；旧插件仍可使用网页 RPC walker。插件 reload 时 SDK 会解除旧扩展总线监听，新的 revision 阻止旧问卷复用。wrapper 销毁只释放自身桥接监听，不由网络断线触发 Agent abort。
++
++测试：remote-bridge.test.mjs 为无模型 wrapper/route 夹具；remote-bridge.integration.mjs 必须显式设置 PI_WEB_QUESTIONNAIRE_SOURCE，连接固定源码插件与真实 SDK EventBus、原 wrapper UI，但不创建 AgentSession 或启动服务。它不是生产/Android 验收。跨仓库接口、执行记录见主开发仓库 docs/pi-web-remote/MINIMAL-BRIDGE-ADR.md。
+diff --git a/lib/agent-event-stream.ts b/lib/agent-event-stream.ts
+index ac1e88b..6cbe6ae 100644
+--- a/lib/agent-event-stream.ts
++++ b/lib/agent-event-stream.ts
+@@ -1,3 +1,4 @@
++import { randomUUID } from "node:crypto";
+ import {
+   AGENT_EVENT_HEARTBEAT_MS,
+   isEventIncludedInSnapshot,
+@@ -173,7 +174,10 @@ export function createAgentEventStream(
+   req: Request,
+   sessionId: string,
+   sessionPromise: Promise<AgentEventStreamSession>,
+-  meta?: { holder?: string | null; address?: string | null; client?: string | null },
++  meta?: {
++    holder?: string | null; address?: string | null; client?: string | null;
++    remote?: { agentInstanceId: string; snapshot: () => unknown };
++  },
+ ): ReadableStream<Uint8Array> {
+   let cancelStream: (closeController: boolean | "error") => void = () => {};
+ 
+@@ -258,8 +262,14 @@ export function createAgentEventStream(
+           cleanup(false);
+         }
+       };
++      const epoch = meta?.remote ? randomUUID() : undefined;
++      let seq = 0;
+       const encode = (data: unknown, options?: { droppable?: boolean }) => {
+-        enqueueText(`data: ${JSON.stringify(data)}\n\n`, options);
++        const frame = meta?.remote ? {
++          ...(data as Record<string, unknown>), sessionId,
++          agentInstanceId: meta.remote.agentInstanceId, epoch, seq: ++seq,
++        } : data;
++        enqueueText(`data: ${JSON.stringify(frame)}\n\n`, options);
+       };
+       const flushToolUpdates = () => {
+         toolUpdateTimer = null;
+@@ -294,6 +304,7 @@ export function createAgentEventStream(
+           const session = await sessionPromise;
+           if (closed) return;
+           if (session.isAlive && !session.isAlive() && !session.isExtensionShutdownRequested?.()) {
++            if (meta?.remote) encode({ type: "attachment_ended", code: "not-attachable" });
+             cleanup(true);
+             return;
+           }
+@@ -307,6 +318,7 @@ export function createAgentEventStream(
+               return;
+             }
+             if (event.type === "session_shutdown") {
++              if (meta?.remote) encode({ type: "attachment_ended", code: "not-attachable" });
+               cleanup(true);
+               return;
+             }
+@@ -324,6 +336,7 @@ export function createAgentEventStream(
+           }
+           if (session.isAlive && !session.isAlive() && !session.isExtensionShutdownRequested?.()) {
+             stopListening();
++            if (meta?.remote) encode({ type: "attachment_ended", code: "not-attachable" });
+             cleanup(true);
+             return;
+           }
+@@ -334,6 +347,7 @@ export function createAgentEventStream(
+             type: "connected",
+             sessionId,
+             isStreaming: session.isStreaming,
++            ...(meta?.remote ? { remoteSnapshot: meta.remote.snapshot() } : {}),
+             // onEvent() has just replayed every request the session still holds,
+             // so a reconnecting client can drop the ones closed while it was away.
+             pendingExtensionUiIds: bufferedEvents
+@@ -348,7 +362,10 @@ export function createAgentEventStream(
+           snapshotPublished = true;
+         } catch (error) {
+           if (closed) return;
+-          encode({
++          encode(meta?.remote ? {
++            type: "attachment_error",
++            code: (error as { code?: string })?.code ?? "bridge-error",
++          } : {
+             type: "startup_error",
+             errorMessage: `Failed to start agent: ${errorMessage(error)}`,
+           });
+diff --git a/lib/remote-bridge.integration.mjs b/lib/remote-bridge.integration.mjs
+new file mode 100644
+index 0000000..9bdc086
+--- /dev/null
++++ b/lib/remote-bridge.integration.mjs
+@@ -0,0 +1,141 @@
++// 显式跨源码契约夹具：不构造 AgentSession、不运行服务、不加载用户配置。
++import assert from "node:assert/strict";
++import test from "node:test";
++import { join, resolve } from "node:path";
++import { mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { createEventBus, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
++import { createJiti } from "jiti";
++
++assert.ok(process.env.PI_WEB_QUESTIONNAIRE_SOURCE, "显式设置固定版本问答插件源码目录，不能跳过此集成测试");
++const source = resolve(process.env.PI_WEB_QUESTIONNAIRE_SOURCE);
++const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
++const { registerAskUserQuestionTool } = await jiti.import(`${source}/ask-user-question.ts`);
++const { AgentSessionWrapper } = await jiti.import("./rpc-manager.ts");
++const { RemoteQuestionnaireBridge } = await jiti.import("./remote-questionnaire.ts");
++const routes = await jiti.import("../app/api/remote/[id]/route.ts");
++const eventRoutes = await jiti.import("../app/api/remote/[id]/events/route.ts");
++const question = (header, multiSelect = false) => ({ question: `${header}?`, header, multiSelect,
++  options: [{ label: "A", description: "a", preview: "**preview**" }, { label: "B", description: "b" }] });
++const tick = () => new Promise((resolve) => setImmediate(resolve));
++
++test("SDK ResourceLoader 注入同一总线；invalidate/reload 解除旧插件监听，无重复裁决者", async (t) => {
++  const directory = mkdtempSync(join(tmpdir(), "bridge-loader-"));
++  t.after(() => rmSync(directory, { recursive: true, force: true }));
++  const bus = createEventBus();
++  const bridge = new RemoteQuestionnaireBridge(bus);
++  const loader = new DefaultResourceLoader({
++    cwd: directory, agentDir: join(directory, "agent"), eventBus: bus,
++    settingsManager: SettingsManager.inMemory(),
++    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
++    extensionFactories: [registerAskUserQuestionTool],
++  });
++  assert.equal(bridge.snapshot(), undefined);
++  await loader.reload();
++  assert.deepEqual(bridge.snapshot(), []);
++  loader.getExtensions().runtime.invalidate();
++  assert.equal(bridge.snapshot(), undefined);
++  await loader.reload();
++  assert.deepEqual(bridge.snapshot(), []);
++  loader.getExtensions().runtime.invalidate();
++  bus.clear();
++});
++
++function fixture(t, sessionId = "integration") {
++  const bus = createEventBus(); // Pi Web 安装的真实 SDK 1.5.2 总线。
++  let tool;
++  registerAskUserQuestionTool({ events: bus, registerTool: (value) => { tool = value; } });
++  const inner = { sessionId, isStreaming: false, isCompacting: false, isBashRunning: false,
++    sessionManager: { getCwd: () => "/tmp" }, agent: { state: {} }, extensionRunner: {}, dispose() {} };
++  const wrapper = new AgentSessionWrapper(inner, { questionnaireBridge: new RemoteQuestionnaireBridge(bus) });
++  globalThis.__piSessions ??= new Map();
++  globalThis.__piSessions.set(sessionId, wrapper);
++  t.after(() => { wrapper.destroy(); globalThis.__piSessions.delete(sessionId); });
++  const ui = wrapper.createExtensionUiContext();
++  const seen = [];
++  wrapper.onEvent((event) => seen.push(event));
++  const context = { params: Promise.resolve({ id: sessionId }) };
++  const url = `http://localhost/api/remote/${sessionId}`;
++  const snapshot = async () => (await routes.GET(new Request(url), context)).json();
++  const command = async (body) => {
++    const response = await routes.POST(new Request(url, { method: "POST", body: JSON.stringify({
++      ...body, sessionId, agentInstanceId: wrapper.agentInstanceId,
++    }) }), context);
++    assert.equal(response.status, 200);
++    return response.json();
++  };
++  return { wrapper, seen, snapshot, command, context, url, run: (id, questions) => tool.execute(id, { questions }, undefined, undefined, { hasUI: true, mode: "rpc", ui }) };
++}
++
++test("原 wrapper UI + 原插件 + 真实 EventBus：网页部分作答／手机整份提交／重连／查询", async (t) => {
++  const h = fixture(t);
++  const done = h.run("original-call", [question("One"), question("Many", true), question("Text")]);
++  const s = await h.snapshot();
++  assert.ok(s.capabilities.includes("pi-web.questionnaire.v1"));
++  const q = s.questionnaires[0];
++  assert.equal(q.questions[0].options[0].preview, "**preview**");
++  const first = h.seen.find((e) => e.type === "extension_ui_request");
++  assert.equal((await h.command({ type: "ui.respond", id: first.id, value: first.options[0] })).verdict, "accepted");
++  await tick();
++  const second = h.seen.findLast((e) => e.type === "extension_ui_request");
++  assert.equal(second.method, "input");
++  const answers = [{ questionIndex: 0, optionIndexes: [1] }, { questionIndex: 1, optionIndexes: [0, 1], text: "extra", notes: " note " }, { questionIndex: 2, text: "free" }];
++  const submit = { type: "questionnaire.submit", toolCallId: q.toolCallId, revision: q.revision, operationId: "stable", answers, globalNote: "global" };
++  const accepted = await h.command(submit);
++  assert.equal(accepted.verdict, "accepted");
++  assert.deepEqual(await h.command(submit), accepted);
++  assert.equal((await h.command({ ...submit, answers: [] })).verdict, "operation-conflict");
++  assert.deepEqual(await h.command({ type: "operation.get", ...q, operationId: "stable" }), accepted);
++  const result = await done;
++  assert.equal(result.details.cancelled, false);
++  assert.deepEqual(result.details.answers.map((a) => a.answer), ["B", "extra", "free"]);
++  assert.equal(result.details.answers[1].notes, "note");
++  assert.equal(h.wrapper.pendingUiRequests.size, 0);
++  assert.equal(h.seen.filter((e) => e.type === "extension_ui_request").length, 2);
++  assert.equal((await h.command({ ...submit, operationId: "late" })).verdict, "already-closed");
++  // 断线后只重新订阅并拉取权威快照，不重放任何业务写入。
++  const response = await eventRoutes.GET(new Request(`${h.url}/events?agentInstanceId=${s.agentInstanceId}`), h.context);
++  const reader = response.body.getReader();
++  let connected;
++  while (!connected) {
++    const { value } = await reader.read();
++    const text = new TextDecoder().decode(value);
++    if (text.startsWith("data: ")) connected = JSON.parse(text.slice(6));
++  }
++  assert.equal(connected.type, "connected");
++  assert.deepEqual(connected.remoteSnapshot.questionnaires, []);
++  assert.deepEqual(connected.pendingExtensionUiIds, []);
++  await reader.cancel();
++});
++
++test("完整问卷投影超 1 MiB 明确拒绝，不截断、不关闭原网页问题", async (t) => {
++  const h = fixture(t);
++  const large = question("Large");
++  large.options[0].preview = "x".repeat(1024 * 1024);
++  const done = h.run("large-call", [large]);
++  const response = await routes.GET(new Request(h.url), h.context);
++  assert.equal(response.status, 413);
++  assert.equal((await response.json()).error, "questionnaire-too-large");
++  assert.equal(h.seen.find((event) => event.type === "questionnaire_unavailable").toolCallId, "large-call");
++  const dialog = h.seen.findLast((event) => event.type === "extension_ui_request");
++  await h.command({ type: "ui.respond", id: dialog.id, value: dialog.options[1] });
++  assert.equal((await done).details.answers[0].answer, "B");
++});
++
++test("总线作用域隔离；同 toolCallId 不会串到其他原 wrapper", async (t) => {
++  const a = fixture(t, "a");
++  const b = fixture(t, "b");
++  const doneA = a.run("same-call", [question("A")]);
++  const doneB = b.run("same-call", [question("B")]);
++  const qa = (await a.snapshot()).questionnaires[0];
++  const qb = (await b.snapshot()).questionnaires[0];
++  assert.notEqual(qa.revision, qb.revision);
++  assert.equal((await a.command({ type: "questionnaire.submit", ...qb, operationId: "wrong", answers: [{ questionIndex: 0, optionIndexes: [1] }] })).verdict, "stale");
++  assert.equal((await a.command({ type: "questionnaire.cancel", ...qa, operationId: "cancel" })).verdict, "accepted");
++  assert.equal((await doneA).details.cancelled, true);
++  assert.equal(b.wrapper.pendingUiRequests.size, 1);
++  const dialog = b.seen.findLast((e) => e.type === "extension_ui_request");
++  await b.command({ type: "ui.respond", id: dialog.id, value: dialog.options[0] });
++  await doneB;
++  assert.equal((await b.command({ type: "questionnaire.cancel", ...qb, operationId: "late" })).verdict, "already-closed");
++});
+diff --git a/lib/remote-bridge.test.mjs b/lib/remote-bridge.test.mjs
+new file mode 100644
+index 0000000..eeefb8b
+--- /dev/null
++++ b/lib/remote-bridge.test.mjs
+@@ -0,0 +1,127 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { createEventBus } from "@earendil-works/pi-coding-agent";
++import { createJiti } from "jiti";
++
++const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
++const { AgentSessionWrapper, attachRpcSession } = await jiti.import("./rpc-manager.ts");
++const { RemoteQuestionnaireBridge } = await jiti.import("./remote-questionnaire.ts");
++const routes = await jiti.import("../app/api/remote/[id]/route.ts");
++const events = await jiti.import("../app/api/remote/[id]/events/route.ts");
++const context = { params: Promise.resolve({ id: "same-session" }) };
++const base = "http://localhost/api/remote/same-session";
++
++function fixture(t) {
++  const before = globalThis.__piSessions;
++  const inner = {
++    sessionId: "same-session", isStreaming: false, isCompacting: false, isBashRunning: false,
++    sessionManager: { getCwd: () => "/tmp" }, agent: { state: {} }, extensionRunner: {},
++    dispose() { this.disposed = true; },
++  };
++  const bus = createEventBus();
++  const wrapper = new AgentSessionWrapper(inner, { questionnaireBridge: new RemoteQuestionnaireBridge(bus) });
++  globalThis.__piSessions = new Map([[inner.sessionId, wrapper]]);
++  t.after(() => { wrapper.destroy(); globalThis.__piSessions = before; });
++  const command = (body) => ({ sessionId: inner.sessionId, agentInstanceId: wrapper.agentInstanceId, ...body });
++  const post = (body) => routes.POST(new Request(base, { method: "POST", body: JSON.stringify(command(body)) }), context);
++  return { inner, wrapper, bus, command, post };
++}
++
++async function nextData(reader) {
++  for (;;) {
++    const chunk = await reader.read();
++    if (chunk.done) return null;
++    const text = new TextDecoder().decode(chunk.value);
++    if (text.startsWith("data: ")) return JSON.parse(text.slice(6));
++  }
++}
++
++test("缺失实例 GET/SSE/POST 不创建 registry、会话或 start lock", async () => {
++  const before = globalThis.__piSessions;
++  globalThis.__piSessions = undefined;
++  try {
++    assert.throws(() => attachRpcSession("missing"), { code: "not-attachable" });
++    const locks = globalThis.__piStartLocks;
++    assert.equal((await routes.GET(new Request(base), context)).status, 409);
++    assert.equal((await events.GET(new Request(`${base}/events?agentInstanceId=old`), context)).status, 409);
++    assert.equal((await routes.POST(new Request(base, { method: "POST", body: JSON.stringify({ agentInstanceId: "old" }) }), context)).status, 409);
++    assert.equal(globalThis.__piSessions, undefined);
++    assert.equal(globalThis.__piStartLocks, locks);
++  } finally { globalThis.__piSessions = before; }
++});
++
++test("能力不伪造；两个订阅附着同一 wrapper，有独立 epoch，取消不 dispose 原实例", async (t) => {
++  const { wrapper, inner } = fixture(t);
++  const snapshot = await (await routes.GET(new Request(base), context)).json();
++  assert.equal(snapshot.agentInstanceId, wrapper.agentInstanceId);
++  assert.deepEqual(snapshot.capabilities, ["pi-web.attach.v1"]);
++  const readers = [];
++  for (let i = 0; i < 2; i++) {
++    const response = await events.GET(new Request(`${base}/events?agentInstanceId=${wrapper.agentInstanceId}`), context);
++    assert.equal(response.status, 200);
++    readers.push(response.body.getReader());
++  }
++  const connected = await Promise.all(readers.map(nextData));
++  assert.notEqual(connected[0].epoch, connected[1].epoch);
++  for (const event of connected) {
++    assert.equal(event.agentInstanceId, wrapper.agentInstanceId);
++    assert.equal(event.remoteSnapshot.agentInstanceId, wrapper.agentInstanceId);
++    assert.equal(event.seq, 1);
++  }
++  wrapper.emit({ type: "agent_start" });
++  for (const reader of readers) assert.equal((await nextData(reader)).seq, 2);
++  await Promise.all(readers.map((reader) => reader.cancel()));
++  assert.equal(inner.disposed, undefined);
++  assert.equal(wrapper.listeners.size, 0);
++});
++
++test("同 session 被替换／body 等待后关闭，旧请求在效果前被拒绝", async (t) => {
++  const { wrapper, inner, post } = fixture(t);
++  assert.equal((await post({ type: "ui.respond", id: "unknown", agentInstanceId: "old" })).status, 409);
++  let release;
++  const body = new ReadableStream({ start(controller) { release = () => { controller.enqueue(new TextEncoder().encode(JSON.stringify({ sessionId: inner.sessionId, agentInstanceId: wrapper.agentInstanceId, type: "ui.respond", id: "unknown" }))); controller.close(); }; } });
++  const request = new Request(base, { method: "POST", body, duplex: "half" });
++  const pending = routes.POST(request, context);
++  const replacement = new AgentSessionWrapper(inner);
++  globalThis.__piSessions.set(inner.sessionId, replacement);
++  t.after(() => replacement.destroy());
++  release();
++  assert.equal((await pending).status, 409);
++  assert.throws(() => wrapper.remoteCommand({ sessionId: inner.sessionId, agentInstanceId: wrapper.agentInstanceId, type: "ui.respond" }), { code: "not-attachable" });
++});
++
++test("普通 UI 回执按真实 ID；错误值不消费、取消不采纳夹带 value、未知 ID 不假成功", async (t) => {
++  const { wrapper, post } = fixture(t);
++  const seen = [];
++  wrapper.onEvent((event) => seen.push(event));
++  const pending = wrapper.createExtensionUiContext().select("Pick", ["A", "B"]);
++  const id = seen.at(-1).id;
++  assert.equal((await post({ type: "ui.respond", id, value: "wrong" })).status, 400);
++  assert.deepEqual(await (await post({ type: "ui.respond", id: "missing", value: "A" })).json(), { id: "missing", verdict: "already-closed" });
++  assert.equal((await (await post({ type: "ui.respond", id, cancelled: true, value: "A" })).json()).verdict, "accepted");
++  assert.equal(await pending, undefined);
++  assert.equal((await (await post({ type: "ui.respond", id, value: "A" })).json()).verdict, "already-closed");
++  assert.equal((await post({ type: "prompt", message: "must not execute" })).status, 400);
++});
++
++test("lookup 后实例关闭的 SSE 给明确终止帧，不隐式创建替代实例", async (t) => {
++  const { wrapper } = fixture(t);
++  const response = await events.GET(new Request(`${base}/events?agentInstanceId=${wrapper.agentInstanceId}`), context);
++  const reader = response.body.getReader();
++  const connected = await nextData(reader);
++  assert.equal(connected.type, "connected");
++  wrapper.destroy();
++  const ended = await nextData(reader);
++  assert.equal(ended.type, "attachment_ended");
++  assert.equal(ended.code, "not-attachable");
++  assert.equal(ended.agentInstanceId, wrapper.agentInstanceId);
++  assert.equal(await nextData(reader), null);
++  assert.equal((await routes.GET(new Request(base), context)).status, 409);
++});
++
++test("请求体实际字节限额、非法 JSON 与缺少实例在业务前拒绝", async (t) => {
++  const { post } = fixture(t);
++  assert.equal((await post({ type: "ui.respond", value: "x".repeat(1024 * 1024) })).status, 413);
++  assert.equal((await routes.POST(new Request(base, { method: "POST", body: "{" }), context)).status, 400);
++  assert.equal((await routes.POST(new Request(base, { method: "POST", body: "{}" }), context)).status, 400);
++});
+diff --git a/lib/remote-http.ts b/lib/remote-http.ts
+new file mode 100644
+index 0000000..be40502
+--- /dev/null
++++ b/lib/remote-http.ts
+@@ -0,0 +1,47 @@
++import { remoteError } from "./remote-questionnaire";
++
++const MAX_BODY_BYTES = 1024 * 1024;
++
++/** 限额在解析之前生效，不信任 Content-Length；不记录原始请求或错误正文。 */
++export async function readRemoteCommand(req: Request): Promise<Record<string, unknown>> {
++  if (Number(req.headers.get("content-length")) > MAX_BODY_BYTES) throw remoteError("body-too-large", 413);
++  if (!req.body) throw remoteError("invalid-command", 400);
++  const reader = req.body.getReader();
++  const chunks: Uint8Array[] = [];
++  let bytes = 0;
++  try {
++    for (;;) {
++      req.signal.throwIfAborted();
++      const { done, value } = await reader.read();
++      if (done) break;
++      bytes += value.byteLength;
++      if (bytes > MAX_BODY_BYTES) {
++        await reader.cancel();
++        throw remoteError("body-too-large", 413);
++      }
++      chunks.push(value);
++    }
++  } finally {
++    reader.releaseLock();
++  }
++  const data = new Uint8Array(bytes);
++  let offset = 0;
++  for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.byteLength; }
++  let parsed: unknown;
++  try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(data)); }
++  catch { throw remoteError("invalid-command", 400); }
++  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw remoteError("invalid-command", 400);
++  return parsed as Record<string, unknown>;
++}
++
++export function remoteJson(data: unknown): Response {
++  return Response.json(data, { headers: { "Cache-Control": "no-store" } });
++}
++
++export function remoteFailure(error: unknown): Response {
++  const failure = error as { code?: unknown; status?: unknown } | null;
++  const status = typeof failure?.status === "number" && [400, 409, 413].includes(failure.status) ? failure.status : 500;
++  return Response.json({ error: status === 500 ? "bridge-error" : failure?.code }, {
++    status, headers: { "Cache-Control": "no-store" },
++  });
++}
+diff --git a/lib/remote-questionnaire.ts b/lib/remote-questionnaire.ts
+new file mode 100644
+index 0000000..b259c42
+--- /dev/null
++++ b/lib/remote-questionnaire.ts
+@@ -0,0 +1,92 @@
++import { randomUUID } from "node:crypto";
++import type { EventBus } from "@earendil-works/pi-coding-agent";
++
++// 与问答插件 events.ts 的版本化 JSON 契约对应；不导出任意总线访问能力。
++const REQUEST = "rpiv:ask-user:bridge-request.v1";
++const RESPONSE = "rpiv:ask-user:bridge-response.v1";
++const STATE = "rpiv:ask-user:bridge-state.v1";
++// 不截断问题或 preview 后冒称完整问卷；超限只禁用该投影，原网页继续可答。
++const MAX_SNAPSHOT_BYTES = 1024 * 1024;
++const fitsSnapshot = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_SNAPSHOT_BYTES;
++export interface QuestionnaireSnapshot {
++  toolCallId: string;
++  revision: string;
++  state: "open" | "answered" | "cancelled" | "aborted";
++  questions?: readonly {
++    questionIndex: number;
++    question: string;
++    header: string;
++    multiSelect: boolean;
++    options: readonly { optionIndex: number; label: string; description: string; preview?: string }[];
++  }[];
++}
++export interface QuestionnaireOperation {
++  toolCallId: string;
++  revision: string;
++  operationId: string;
++  verdict: "accepted" | "invalid" | "stale" | "already-closed" | "operation-conflict" | "unknown";
++  state?: QuestionnaireSnapshot["state"];
++  code?: string;
++}
++interface BridgeResponse {
++  requestId: string;
++  available?: boolean;
++  questionnaires?: QuestionnaireSnapshot[];
++  operation?: QuestionnaireOperation;
++}
++
++export function remoteError(code: string, status = 409): Error {
++  return Object.assign(new Error(code), { code, status });
++}
++
++/** 只操作原 resource loader 的总线。SDK 1.5.2 EventBus 同步调用同步 listener。 */
++export class RemoteQuestionnaireBridge {
++  constructor(private readonly bus: EventBus) {}
++
++  private request(payload: Record<string, unknown>): BridgeResponse | undefined {
++    const requestId = randomUUID();
++    let result: BridgeResponse | undefined;
++    let replies = 0;
++    const off = this.bus.on(RESPONSE, (data) => {
++      const response = data as BridgeResponse | null;
++      if (response?.requestId === requestId) {
++        result = response;
++        replies += 1;
++      }
++    });
++    try {
++      this.bus.emit(REQUEST, { ...payload, requestId });
++      return replies === 1 ? result : undefined;
++    } finally {
++      off();
++    }
++  }
++
++  snapshot(): QuestionnaireSnapshot[] | undefined {
++    if (this.request({ type: "describe" })?.available !== true) return undefined;
++    const questionnaires = this.request({ type: "snapshot" })?.questionnaires;
++    if (questionnaires && !fitsSnapshot(questionnaires)) throw remoteError("questionnaire-too-large", 413);
++    return questionnaires;
++  }
++
++  operation(command: Record<string, unknown>): QuestionnaireOperation {
++    const type = command.type === "questionnaire.submit" ? "submit"
++      : command.type === "questionnaire.cancel" ? "cancel" : "operation.get";
++    const response = this.request({
++      type, toolCallId: command.toolCallId, revision: command.revision,
++      operationId: command.operationId, answers: command.answers, globalNote: command.globalNote,
++    });
++    if (!response?.operation) throw remoteError("questionnaire-unavailable");
++    return response.operation;
++  }
++
++  onState(listener: (event: { type: string; [key: string]: unknown }) => void): () => void {
++    return this.bus.on(STATE, (value) => {
++      const questionnaire = value as QuestionnaireSnapshot;
++      listener(fitsSnapshot(questionnaire) ? { type: "questionnaire_state", questionnaire } : {
++        type: "questionnaire_unavailable", code: "questionnaire-too-large",
++        toolCallId: questionnaire.toolCallId, revision: questionnaire.revision,
++      });
++    });
++  }
++}
+diff --git a/lib/rpc-manager.ts b/lib/rpc-manager.ts
+index 45972c8..221b5ff 100644
+--- a/lib/rpc-manager.ts
++++ b/lib/rpc-manager.ts
+@@ -1,11 +1,12 @@
+ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+-import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme, type ModelRuntime } from "@earendil-works/pi-coding-agent";
++import { createAgentSessionFromServices, createAgentSessionServices, createEventBus, getAgentDir, initTheme, SessionManager, SettingsManager, Theme, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+ import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
+ import { randomUUID } from "crypto";
+ import { existsSync, realpathSync, writeFileSync } from "fs";
+ import { resolve } from "path";
+ import { isDeepStrictEqual } from "util";
+ import { validateAgentImages } from "./image-attachments";
++import { RemoteQuestionnaireBridge, remoteError } from "./remote-questionnaire";
+ import { EXTENSION_REPORTED_CODE } from "./agent-client";
+ import { cwdMissingError } from "./missing-cwd";
+ import { invalidateModelsCache } from "./models-cache";
+@@ -171,6 +172,7 @@ type ExtensionCommandContextActionsLike = {
+ type WrapperMcpHost = Pick<McpHost, "prepareForPrompt" | "dispose"> & Partial<Pick<McpHost, "debugSnapshot">>;
+ 
+ type AgentSessionWrapperOptions = {
++  questionnaireBridge?: RemoteQuestionnaireBridge;
+   exactSystemPrompt?: () => string;
+   chatOnly?: boolean;
+   onAgentRunComplete?: AgentRunCompleteListener;
+@@ -366,6 +368,9 @@ interface ActiveToolEvents {
+ }
+ 
+ export class AgentSessionWrapper {
++  readonly agentInstanceId = randomUUID();
++  private readonly questionnaireBridge?: RemoteQuestionnaireBridge;
++  private unsubscribeQuestionnaire: (() => void) | undefined;
+   // A Set, not an array: an SSE stream unsubscribes from inside emit() when it
+   // closes on session_shutdown, and splicing an array mid-iteration made the
+   // next stream miss that same event.
+@@ -452,6 +457,10 @@ export class AgentSessionWrapper {
+     public readonly inner: AgentSessionLike,
+     options: AgentSessionWrapperOptions = {},
+   ) {
++    this.questionnaireBridge = options.questionnaireBridge;
++    this.unsubscribeQuestionnaire = this.questionnaireBridge?.onState((event) => {
++      if (this.isAlive()) this.emit({ ...event, sessionId: this.sessionId, agentInstanceId: this.agentInstanceId });
++    });
+     this.exactSystemPrompt = options.exactSystemPrompt;
+     this.chatOnly = options.chatOnly ?? false;
+     this.onAgentRunComplete = options.onAgentRunComplete;
+@@ -1263,6 +1272,50 @@ export class AgentSessionWrapper {
+     };
+   }
+ 
++  assertRemoteInstance(expected: unknown): void {
++    if (!this.isAlive() || globalThis.__piSessions?.get(this.sessionId) !== this) throw remoteError("not-attachable");
++    if (expected !== this.agentInstanceId) throw remoteError("stale-instance");
++  }
++
++  getRemoteSnapshot() {
++    this.assertRemoteInstance(this.agentInstanceId);
++    const questionnaires = this.questionnaireBridge?.snapshot();
++    this.assertRemoteInstance(this.agentInstanceId);
++    return {
++      sessionId: this.sessionId, agentInstanceId: this.agentInstanceId,
++      capabilities: ["pi-web.attach.v1", ...(questionnaires ? ["pi-web.questionnaire.v1"] : [])],
++      running: this.isRunning(), isStreaming: this.isStreaming, awaitingInput: this.isAwaitingInput(),
++      questionnaires: questionnaires ?? [],
++    };
++  }
++
++  // 有限操作同步校验后直接到原控制器，不经过可冷启动／等待 binding 的 send()。
++  remoteCommand(command: Record<string, unknown>): unknown {
++    this.assertRemoteInstance(command.agentInstanceId);
++    if (command.sessionId !== this.sessionId) throw remoteError("stale-session");
++    if (["questionnaire.submit", "questionnaire.cancel", "operation.get"].includes(command.type as string)) {
++      if (!this.questionnaireBridge) throw remoteError("questionnaire-unavailable");
++      return { ...this.questionnaireBridge.operation(command), sessionId: this.sessionId, agentInstanceId: this.agentInstanceId };
++    }
++    if (command.type !== "ui.respond") throw remoteError("unsupported-command", 400);
++    if (typeof command.id !== "string") throw remoteError("invalid-dialog-response", 400);
++    const request = this.pendingUiRequests.get(command.id);
++    const pending = this.pendingUiResponses.get(command.id);
++    if (request && !pending) throw remoteError("unsupported-dialog", 400);
++    if (!request || !pending) return { id: command.id, verdict: "already-closed" };
++    if (command.cancelled !== undefined && typeof command.cancelled !== "boolean") throw remoteError("invalid-dialog-response", 400);
++    if (command.cancelled !== true) {
++      const valid = request.method === "confirm" ? typeof command.confirmed === "boolean"
++        : request.method === "select" ? Array.isArray(request.options) && request.options.includes(command.value)
++        : (request.method === "input" || request.method === "editor") && typeof command.value === "string";
++      if (!valid) throw remoteError("invalid-dialog-response", 400);
++    }
++    // 取消不能夹带 value，避免旧 parseResponse 把取消误读为选择。
++    if (command.cancelled === true) pending.cancel();
++    else pending.resolve(command as unknown as ExtensionUiResponse);
++    return { id: command.id, verdict: "accepted" };
++  }
++
+   onDestroy(cb: () => void): void {
+     this.onDestroyCallback = cb;
+   }
+@@ -2028,6 +2081,8 @@ export class AgentSessionWrapper {
+     this.idleDeadlineAt = null;
+     if (this.inner.isBashRunning) this.inner.abortBash();
+     this.unsubscribe?.();
++    this.unsubscribeQuestionnaire?.();
++    this.unsubscribeQuestionnaire = undefined;
+     this.cancelExtensionUi();
+     this.pendingUiResponses.clear();
+     this.pendingUiRequests.clear();
+@@ -3032,6 +3087,14 @@ export function getRpcSession(sessionId: string): AgentSessionWrapper | undefine
+   return getRegistry().get(sessionId);
+ }
+ 
++/** 只查现有 registry：不安装生命周期 handler，不读文件，不等待或启动实例。 */
++export function attachRpcSession(sessionId: string, expected?: string): AgentSessionWrapper {
++  const session = globalThis.__piSessions?.get(sessionId);
++  if (!session?.isAlive() || typeof session.agentInstanceId !== "string") throw remoteError("not-attachable");
++  session.assertRemoteInstance(expected ?? session.agentInstanceId);
++  return session;
++}
++
+ /**
+  * The sidebar's rename (#1388). A session a wrapper holds is renamed through
+  * `AgentSession.setSessionName()`, as pi's `/name`, so the `session_info` entry hangs off the live
+@@ -3588,12 +3651,15 @@ export async function startRpcSession(
+         : []),
+       ...(skillsBinding?.loaderOptions.extensionFactories ?? []),
+     ];
++    const questionnaireBus = createEventBus();
++    const questionnaireBridge = new RemoteQuestionnaireBridge(questionnaireBus);
+     const services = await createAgentSessionServices({
+       cwd: sessionCwd,
+       agentDir,
+       settingsManager,
+       resourceLoaderOptions: subagentResources
+         ? {
++            eventBus: questionnaireBus,
+             ...subagentExtensionLoaderOptions(subagentResources),
+             ...skillsBinding!.loaderOptions,
+             extensionFactories: subagentExtensionFactories,
+@@ -3609,8 +3675,9 @@ export async function startRpcSession(
+             appendSystemPrompt: subagentResources.appendSystemPrompt,
+           }
+         : chatOnly
+-          ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, extensionFactories: [exactSystemPromptExtension] }
++          ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, eventBus: questionnaireBus, extensionFactories: [exactSystemPromptExtension] }
+         : {
++            eventBus: questionnaireBus,
+             extensionFactories: [
+               llamaCppExtension,
+               ...(builtins?.extensions ?? []),
+@@ -3785,6 +3852,7 @@ export async function startRpcSession(
+       }
+       : undefined;
+     const wrapper = new AgentSessionWrapper(inner, {
++      questionnaireBridge,
+       exactSystemPrompt,
+       chatOnly,
+       onAgentRunComplete: (completedSessionId, sessionName) => {
