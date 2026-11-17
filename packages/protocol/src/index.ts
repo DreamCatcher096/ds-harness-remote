@@ -1,4 +1,5 @@
 export * from './loopback.js'
+export * from './pi-web.js'
 import { parseWireJson } from './wire-json.js'
 import { z } from 'zod'
 
@@ -146,6 +147,20 @@ export const controlFrameTypes = [
 ] as const
 
 export const rpcMethods = [
+  'pi-web.describe',
+  'pi-web.sessions.list',
+  'pi-web.session.history',
+  'pi-web.session.prompt',
+  'pi-web.session.abort',
+  'pi-web.session.operation.get',
+  'pi-web.session.snapshot',
+  'pi-web.session.subscribe',
+  'pi-web.session.read',
+  'pi-web.session.unsubscribe',
+  'pi-web.questionnaire.submit',
+  'pi-web.questionnaire.cancel',
+  'pi-web.questionnaire.operation.get',
+  'pi-web.ui.respond',
   'workspace.upload.open',
   'workspace.upload.chunk',
   'workspace.upload.commit',

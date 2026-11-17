@@ -8,6 +8,26 @@
 协议版本：`1`
 实现状态：**当前仓库实现 Client/Plugin 侧协议与最小单账号 Relay Server；完整 Server 由独立项目实现**
 
+### Pi Web 派生 Host（隔离实现，非生产可用性声明）
+
+本派生仓库新增 `pi-web.attach.v1`、`pi-web.chat.v1` 与以下 RPC，仅由独立 Pi Web Host 实现；原 DSH Host 不注册，仍返回 METHOD_NOT_FOUND。顶层 v=1 和原 Noise/Remote envelope 不变，不伪装 `harness.remote.v1` 或 `agent.acp.pi.v1`。实际 schema 见 `packages/protocol/src/pi-web.ts`；工程决定见 [Host ADR](pi-web-remote/HOST-ADR.md)。
+
+- `pi-web.describe({})`：返回 kind=pi-web、接口能力与 upstream=unverified；不是上游就绪探测，也不是 Harness 版本。
+- `pi-web.sessions.list({})`：只读目录，含 sessionId/cwd/title、真实 attachable/agentInstanceId/running；不创建／恢复 Agent。目录最多 1000 条，超限拒绝，不返回假完整列表。
+- `pi-web.session.history({sessionId,agentInstanceId?,before?})`：读取当前 branch 的真实 messageId／toolCallId；冷会话直接有界只读 JSONL，不用可能迁移的 SessionManager.open，不写 scanner index。before 是真实消息 ID；指定旧实例或过期游标则拒绝，不回退其他实例。每页最多 100 条／512 KiB，hasMore/before 明确。不是通用文件读取。
+- `pi-web.session.prompt/abort({sessionId,agentInstanceId,operationId,message?})`：只作用原 wrapper；prompt 不排队、不自动 steer，忙碌拒绝。执行前以及 binding/admission/MCP 等待后重新校验实例；不接模型／provider 等参数。
+- `pi-web.session.operation.get({sessionId,agentInstanceId,operationId})`：查询原实例内存回执。accepted=原 wrapper 的 send 已受理（prompt 为原 preflight），不是模型任务完成；rejected=可证明执行前拒绝；unknown=无法证明。最多 256 条／实例，不驱逐后再执行旧操作；容量满明确拒绝，崩溃后无持久 exactly-once。
+- `pi-web.session.snapshot({sessionId})`：只附着原 alive wrapper，返回真实 session/agentInstanceId、状态与问卷能力；缺失时不可创建或恢复。
+- `pi-web.session.subscribe({sessionId,agentInstanceId})`：从原 SSE connected 边界返回 streamId、snapshot、epoch/seq、pendingExtensionUiIds（至多 128）。句柄属于当前认证连接，换代后不能复用。
+- `pi-web.session.read({streamId})`：一次至多一个原帧；空等 10 秒返回 events=[]、done=false，真实终止才 done=true。同句柄并发 read 返回 READ_IN_PROGRESS；每连接最多 16 句柄，空闲 60 秒释放。
+- `pi-web.session.unsubscribe({streamId})`：仅释放本连接拥有的订阅，不发 Agent Stop。
+- `pi-web.questionnaire.submit/cancel/operation.get`：按 sessionId、agentInstanceId、toolCallId、revision、operationId 关联原控制器。revision 为 opaque string；submit 使用整份 0-based 答案，cancel 无 answers。原控制器回执才决定 accepted，Host 不自判成功。
+- `pi-web.ui.respond`：按真实 dialog ID 发送 value/confirmed 或 cancelled；只表示该普通 UI 回调被消费，不表示整份问卷结束。
+
+参数 strict 校验，拒绝客户端自报 peer、任意 URL/header、假 frameRpcId 或其他后台命令。聊天和问卷 operationId 在 Host 内按已认证 peerDeviceId 做稳定命名空间；结果映射回原客户端 operationId。网络中断后的写入不自动重试，unknown 必须先查询。Host 不承诺跨原控制器崩溃的持久 exactly-once。
+
+HTTP 固定回环 127.0.0.1:30141，禁重定向；业务 JSON/单帧至多 1 MiB、订阅累计 64 MiB。超限或 epoch/seq 缺口必须 resync，不删除限额或重放 prompt/答案。该拉取通道不等于 WebView 代理，原 loopback HTTP 空读超时仍待修复。快照的 chat 是当前 branch 的有界尾页，不冒称全量历史或持久事件游标。connected 同步边界带 chat、streaming（无持久 ID 的独立临时区）、真实工具集合与问卷；随后 chat.state 替换权威投影，chat.live 每 150ms 至多一次更新临时流式／工具部分结果，不重复发送历史。最终消息在 SDK 持久化后的微任务快照中使用真实 entry ID，不按文本或时间戳猜去重。缺口／EOF／换代只读重建一次，失败停止等待显式恢复。详情见 [P3 决定](pi-web-remote/P3-ADR.md)。没有 WebView／网页转发能力，Android 是隔离源码接线而非真机验收。
+
 ### Claude ACP Host 实验性接入（Issue #125）
 
 `claude` 是独立 ACP backend ID，默认关闭，只使用现有加密 `agent.acp.*` 数据面及固定方法 allowlist；`initialize`、`session/new`、`session/prompt` 的 backend 可显式选择 `claude`。不得按命令名称猜测后端或在其不可用时回退到 Cursor。Host 使用本机预授权的 `claude-agent-acp` stdio adapter，不发送 Cursor `authenticate(cursor_login)`。权限响应仍仅允许现有单次允许/拒绝契约。Host 通过固定 `dsh/workspaceList` / `dsh/sessionList` 使用上游 ACP `session/list` 的分页目录与 Session authority；只接受 Host realpath 验证的真实 cwd。Claude `session/load` 必须显式指定 backend，并由 Host catalog 或本机已创建的 Session 确认 cwd，不能接受 Client 自报路径；活动回复期间禁止重新 load，独立 history 读取不受此限制。`dsh/sessionHistory` 可使用 `claude:<native-session-id>`，前缀必须匹配 backend；历史只经独立临时 ACP process 的 `session/load` replay 获取，不读本机 transcript 文件，最多 8 MiB / 10,000 更新，超限显式失败，读取失败不得返回成功的部分历史或伪造空历史。保留最多 30 个 live/loading Session，以及一个临时 history process；重复 load 不重放污染 live stream。`session/cancel` 使用标准无请求 ID 的 notification；Gateway 同步撤销该会话待审批句柄并隔离迟到权限请求，其他会话/后端不受影响，最终完成状态由上游 `cancelled` 确认，不伪造停止成功。Claude Desktop/Android 使用 `claude:cwd:` 工作区与 `claude:` 会话前缀，仅作客户端内存投影。模型目录与切换复用下述固定 `dsh/sessionModels` / `dsh/selectModel`，Claude 图片输入暂不支持；直接 Files/Terminal 复用 Host 共享工作区桥接及路径、连接和终端归属校验。恢复会话发送 Prompt 前，Host 必须使用可信 cwd 加载；准备期间取消不启动迟到回复，也不清除后续重试。加密跨设备及原生设备验收仍待完成。
