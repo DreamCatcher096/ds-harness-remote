@@ -1,3 +1,15 @@
+# Pi Web Remote — 开发派生仓库
+
+本项目基于 DSH Remote 固定提交 `0a0ac9a1a647a171b79b19998d24bdd43bae9ea0`，规划为同一 Pi Web 实例提供 Android 原生聊天、完整问卷与加密网页入口。
+
+**P3 原生聊天与完整问卷接线已完成源码与隔离契约验证；没有 WebView、生产部署或真机验收。** 当前结果见 [P3 执行记录](docs/pi-web-remote/P3-RESULTS.md)。 从 [项目开发入口](docs/pi-web-remote/README.md)、[桥接执行记录](docs/pi-web-remote/MINIMAL-BRIDGE-RESULTS.md)、[实施方案](docs/pi-web-remote/IMPLEMENTATION-PLAN.md) 和 [AGENTS.md](AGENTS.md) 开始。
+
+P3.1 已完成原 App UI 复用及离线模拟器原生场景验证，见 [P3.1 执行记录](docs/pi-web-remote/P3.1-RESULTS.md)。测试包不是可联网手机业务包，仍无真实 Host、账号、模型或生产验收。
+
+以下保留上游产品说明与归属，不代表本派生项目已具备这些能力；其他上游 README/TODO 中的安装、迁移和发布步骤也不是本项目的执行授权。
+
+---
+
 <p align="center">
 
   <img src="docs/logo.svg" alt="DeepSeek Harness Remote" width="600">

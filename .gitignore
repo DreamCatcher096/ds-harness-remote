@@ -25,3 +25,40 @@ artifacts/
 
 # Minimal self-hosted Server credentials and local state
 apps/server/data/
+
+# Pi Web Remote: state and secrets never belong in the development tree
+runtime/
+.pi-web-remote/
+.secrets/
+/credentials/
+/secrets/
+/sessions/
+*.jsonl
+*.log
+.env.*
+!.env.example
+!.env.*.example
+identity.json
+host-identity.json
+device.json
+pi-web-host.json
+credentials.json
+server-credentials.json
+token.json
+tokens.json
+trusted-peers.json
+*.pem
+*.key
+*.keystore
+*.jks
+
+# Android/Expo local builds, signing configuration and caches
+.expo/
+.gradle/
+build/
+*.apk
+*.aab
+*.apks
+local.properties
+keystore.properties
+signing.properties
