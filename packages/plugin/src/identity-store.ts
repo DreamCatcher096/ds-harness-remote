@@ -132,6 +132,20 @@ export class IdentityStore {
     }
   }
 
+  /** 独立 Host 的纯读取启动：显式目录、已有身份/信任；绝不进入创建或迁移分支。 */
+  async loadExistingHostState(): Promise<HostIdentity | undefined> {
+    if (this.defaultOptions !== undefined || this.role !== 'host') {
+      throw new IdentityInvalidError('an explicit Host identity directory is required')
+    }
+    this.identity = undefined
+    this.peers.clear()
+    const identity = await this.loadExisting()
+    if (identity === undefined) return undefined
+    await this.loadPeers(false)
+    this.identity = identity
+    return identity
+  }
+
   private async loadOrCreateLocked(deviceName: string): Promise<HostIdentity> {
     const devicePath = join(this.directory, 'device.json')
     const keyPath = join(this.directory, 'device.key')
@@ -258,9 +272,9 @@ export class IdentityStore {
     return removed
   }
 
-  private async loadPeers(): Promise<void> {
+  private async loadPeers(createIfMissing = true): Promise<void> {
     const path = join(this.directory, 'trusted-peers.json')
-    if (!(await exists(path))) {
+    if (createIfMissing && !(await exists(path))) {
       await atomicJsonWrite(path, { schemaVersion: 1, peers: [] }, 0o600)
     }
     const parsed = trustedPeersSchema.parse(JSON.parse(await readFile(path, 'utf8')))

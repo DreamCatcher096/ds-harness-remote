@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2022", "DOM"],
+    "baseUrl": "../..",
+    "paths": {
+      "@dsh-remote/protocol": ["packages/protocol/src/index.ts"],
+      "@dsh-remote/crypto": ["packages/crypto/src/index.ts"],
+      "@dsh-remote/webrtc": ["packages/webrtc/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts", "tests/**/*.ts", "vitest.config.ts",
+    "../../packages/plugin/tests/connection-controller.test.ts",
+    "../../packages/plugin/tests/server-api.test.ts",
+    "../../packages/plugin/tests/server-connection.test.ts"
+  ]
+}

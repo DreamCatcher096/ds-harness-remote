@@ -6,12 +6,16 @@ import {
 } from '@dsh-remote/protocol'
 import type { IdentityStore } from './identity-store.js'
 import type { SafeLogger } from './logging.js'
-import type { RpcRouter } from './rpc-router.js'
 import type { AuthenticatedPeerChannel } from './types.js'
+
+export interface PeerRpcRouter {
+  handle(message: RemoteMessage): Promise<RemoteMessage>
+  closePeerStreams(): Promise<void>
+}
 
 interface ActiveConnection {
   channel: AuthenticatedPeerChannel
-  router: RpcRouter
+  router: PeerRpcRouter
   unsubscribe: () => void
 }
 
@@ -39,14 +43,14 @@ export interface ConnectionCloseDetail {
 export type RpcRouterFactory = (
   context: PeerConnectionContext,
   send: (message: RemoteMessage) => Promise<void>,
-) => RpcRouter
+) => PeerRpcRouter
 
 export class ConnectionController {
   private readonly active = new Map<string, ActiveConnection>()
   private acceptQueue: Promise<void> = Promise.resolve()
 
   constructor(
-    private readonly identities: IdentityStore,
+    private readonly identities: Pick<IdentityStore, 'isTrusted'>,
     private readonly createRouter: RpcRouterFactory,
     private readonly logger?: SafeLogger,
   ) {}

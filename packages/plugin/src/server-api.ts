@@ -82,6 +82,7 @@ export class HostServerApi {
     private readonly store: ServerCredentialStore,
     private readonly fetchImplementation: FetchImplementation = fetch,
     private readonly role: 'host' | 'client' = 'host',
+    private readonly policy: { allowRegistration?: boolean; clientVersion?: string } = {},
   ) {
     this.baseUrl = normalizeServerUrl(serverUrl)
   }
@@ -481,6 +482,9 @@ export class HostServerApi {
       authorizationMethod: 'account'
     },
   ): Promise<ServerCredentials> {
+    if (this.policy.allowRegistration === false) {
+      throw new ServerApiError('ACCOUNT_AUTH_REQUIRED', 'Explicit device authorization is required; automatic registration is disabled.', false)
+    }
     const tokens = await this.publicRequest<TokenPair>('/api/v1/devices/register', {
       method: 'POST',
       body: JSON.stringify({
@@ -502,7 +506,7 @@ export class HostServerApi {
       role: this.role,
       platform: platform(),
       identityKey: identity.publicKey,
-      clientVersion: PLUGIN_VERSION,
+      clientVersion: this.policy.clientVersion ?? PLUGIN_VERSION,
       ...(this.role === 'host' && this.harnessVersion !== undefined ? { harnessVersion: this.harnessVersion } : {}),
     }
   }

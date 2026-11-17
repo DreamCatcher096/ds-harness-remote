@@ -120,6 +120,7 @@ export class HostServerConnection {
     private readonly rtcFactoryProvider?: () => Promise<RtcPeerConnectionFactory | undefined>,
     private readonly hostCapabilities: () => readonly string[] = () => [],
     private readonly harnessVersion?: string,
+    private readonly clientVersion: string = PLUGIN_VERSION,
   ) {}
 
   start(): void {
@@ -453,7 +454,7 @@ export class HostServerConnection {
           deviceId: this.identity.deviceId,
           accessToken: credentials.accessToken,
           protocols: [PROTOCOL_VERSION],
-          clientVersion: PLUGIN_VERSION,
+          clientVersion: this.clientVersion,
           ...(this.harnessVersion === undefined ? {} : { harnessVersion: this.harnessVersion }),
           capabilities: offeredCapabilities,
           ...(recoveryTickets.length ? { recoveryTickets } : {}),

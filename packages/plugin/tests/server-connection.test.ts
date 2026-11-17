@@ -36,6 +36,31 @@ class FakeWebSocket {
 }
 
 describe('HostServerConnection', () => {
+  it('allows an independent Host diagnostic identity without inventing a Harness version', async () => {
+    const socket = new FakeWebSocket()
+    const api = {
+      baseUrl: 'https://remote.test',
+      authenticate: async () => ({ accessToken: 'fixture-token', accessTokenExpiresAt: Date.now() + 3600_000 }),
+    } as unknown as HostServerApi
+    const server = new HostServerConnection(
+      config(),
+      { schemaVersion: 1, deviceId: 'host-1', name: 'Host', fingerprint: 'fixture', ...generateKeyPair(new Uint8Array(32).fill(51)) },
+      { trustedPeer: () => undefined } as unknown as IdentityStore,
+      api, { close: async () => {} } as unknown as ConnectionController, logger(), () => socket,
+      undefined, () => ['pi-web.attach.v1'], undefined, 'pi-web-host@source-0a0ac9a1',
+    )
+    try {
+      server.start()
+      await vi.waitFor(() => expect(socket.onopen).toBeTypeOf('function'))
+      socket.open()
+      const hello = JSON.parse(socket.sent[0])
+      expect(hello.payload.clientVersion).toBe('pi-web-host@source-0a0ac9a1')
+      expect(hello.payload.harnessVersion).toBeUndefined()
+      expect(hello.payload.capabilities).toContain('pi-web.attach.v1')
+      expect(hello.payload.capabilities).not.toContain('agent.acp.v1')
+    } finally { await server.stop() }
+  })
+
   it('starts the hello timeout after the WebSocket upgrade completes', async () => {
     vi.useFakeTimers()
     const socket = new FakeWebSocket()
