@@ -1,329 +1,95 @@
-# Pi Web Remote — 开发派生仓库
+# Pi Web Remote
 
-本项目基于 DSH Remote 固定提交 `0a0ac9a1a647a171b79b19998d24bdd43bae9ea0`，规划为同一 Pi Web 实例提供 Android 原生聊天、完整问卷与加密网页入口。
+**让 Android 成为同一个 Pi Web 会话的原生远程入口，而不是再启动一个 Agent。**
 
-**P3 原生聊天与完整问卷接线已完成源码与隔离契约验证；没有 WebView、生产部署或真机验收。** 当前结果见 [P3 执行记录](docs/pi-web-remote/P3-RESULTS.md)。 从 [项目开发入口](docs/pi-web-remote/README.md)、[桥接执行记录](docs/pi-web-remote/MINIMAL-BRIDGE-RESULTS.md)、[实施方案](docs/pi-web-remote/IMPLEMENTATION-PLAN.md) 和 [AGENTS.md](AGENTS.md) 开始。
+[中文](README.zh.md) · [English](README.en.md) · [日本語](README.ja.md)
 
-P3.1 已完成原 App UI 复用及离线模拟器原生场景验证，见 [P3.1 执行记录](docs/pi-web-remote/P3.1-RESULTS.md)。测试包不是可联网手机业务包，仍无真实 Host、账号、模型或生产验收。
+Pi Web Remote 是基于 [DSH Remote](https://github.com/liguobao/ds-harness-remote) 的独立派生项目。我们复用其加密传输、协议和 Android 界面，为 Pi Web 增加原生聊天与完整问卷入口，而不是继续扩展通用的 DSH／多 Agent 客户端。
 
-以下保留上游产品说明与归属，不代表本派生项目已具备这些能力；其他上游 README/TODO 中的安装、迁移和发布步骤也不是本项目的执行授权。
+> **当前是开发中的源码项目，不是开箱即用的手机远程方案。** 已完成隔离源码、契约测试与离线 Android 模拟器验证；真实账号、Host、跨网链路、手机真机和生产部署仍未验收。上游发布的 App 和 npm 包不包含本项目的 Pi Web 定制。
 
----
+## 为什么做这个项目
 
-<p align="center">
+在电脑上使用 Pi Web 后，希望离开电脑时，仍能在手机上查看和操作**同一个正在运行的会话与 Agent 实例**，保留原有工具、项目上下文和任务，而不是在手机端或 Host 端另起一个 Pi。
 
-  <img src="docs/logo.svg" alt="DeepSeek Harness Remote" width="600">
-</p>
+本项目的目标是：
 
-<p align="center">
-  <strong>English</strong>
-  &nbsp;·&nbsp;
-  <a href="README.zh.md">中文</a>
-  &nbsp;·&nbsp;
-  <a href="README.ja.md">日本語</a>
-</p>
+- **同实例接入**：由独立 Host 桥接现有 Pi Web 持有的原 SDK／Agent，不通过启动 `pi`、`pi-acp` 或第二个 SDK 会话来模拟同步。
+- **原生聊天**：在 Android 中读取会话目录与历史，展示流式文本、思考与普通工具结果，并显式发送文字或停止原任务。
+- **完整原生问卷**：支持单选、多选、自由输入、整份提交、取消、明确回执和跨端失效，不用数字输入或跳转网页代替。
+- **复用加密网络**：沿用 Remote 的 Noise 端到端加密通道，P2P 优先、TURN／Relay 兜底，不占 Android VPN 槽位。
+- **后续网页入口**：计划通过同一套加密网络内嵌 Pi Web 网页；当前阶段不实现或启用 WebView。
 
-<p align="center">
-  <a href="docs/README.md"><img src="https://img.shields.io/badge/Documentation-blue?logo=googledocs&amp;logoColor=white" alt="Documentation"></a>
-  <a href="https://dsh.r2049.cn/app"><img src="https://img.shields.io/badge/Web-4D6BFE?logo=googlechrome&amp;logoColor=white" alt="Web"></a>
-  <a href="https://github.com/liguobao/ds-harness-remote/releases/latest"><img src="https://img.shields.io/badge/Android-3DDC84?logo=android&amp;logoColor=white" alt="Android"></a>
-  <a href="https://github.com/liguobao/ds-harness-remote/issues/20"><img src="https://img.shields.io/badge/iOS-000000?logo=apple&amp;logoColor=white" alt="iOS"></a>
-</p>
+## 当前做到哪里
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/ds-harness-remote"><img src="https://img.shields.io/npm/v/ds-harness-remote?color=CB3837&amp;logo=npm" alt="npm"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue" alt="License: MIT"></a>
-  <a href="apps/server/README.md"><img src="https://img.shields.io/badge/Self--hosting-Docker-2496ED?logo=docker&amp;logoColor=white" alt="Self-hosting"></a>
-  <a href="https://dshfind.com/en/plugins/liguobao/ds-harness-remote?ref=badge"><img src="https://dshfind.com/api/badge/liguobao/ds-harness-remote?metric=downloads&amp;lang=en" alt="dshfind downloads"></a>
-</p>
+### 已实现并在隔离环境验证
 
-## Connect once. Ready whenever you are.
+- `pi-web.*` 协议、独立 Pi Web Host、client-core 状态机及 Android 独立 Pi Web 入口。
+- 原实例关联、会话目录／历史、流式展示、发送／停止及问卷提交／取消的契约。
+- 按真实会话、实例、调用和题目／选项标识关联操作；回执不确定时显示 `unknown`，先查询原操作，不自动重发业务写入。
+- 复用原 App 的顶部栏、消息、输入区、抽屉及问卷视觉，而不是用临时演示页替代。
+- 离线模拟器中的发送／停止、整份问卷、取消丢回执后的重连查询、跨端失效与实例换代等原生交互。
 
-Continue using your DeepSeek Harness instance from a phone, computer, or browser. Return to the same Harness session from whichever device is with you.
+证据与限制见 [P3 源码及契约记录](docs/pi-web-remote/P3-RESULTS.md) 和 [P3.1 离线模拟器记录](docs/pi-web-remote/P3.1-RESULTS.md)。这些记录不是本 README 更新时重新运行的测试。
 
-Harness keeps running on your work computer, with the same workspaces, tools, and project setup. DS Harness Remote is simply another window into that environment.
+### 尚未完成或验证
 
-The DeepSeek Harness desktop edition is supported. Install the latest release:
+- 作者托管服务对独立 Host 的准入、账号要求、费用，以及真实 P2P／TURN／Relay 和蜂窝连接。
+- 正常 App 登录与真实 Host 联调、手机真机验收、真实原实例／模型业务和生产部署。
+- 内嵌 Pi Web 网页／WebView。
+- Pi Web 原生入口中的模型／provider 切换、附件／图片、创建／恢复会话、通用文件和终端入口；不因上游具备这些功能就宣称本项目已接通。
 
-`ds-harness-remote@0.6.4`
+现有测试 APK 是 **x86_64 离线模拟器包，没有 INTERNET 权限**，不能当作普通 ARM 手机的联网业务包。模拟器＋内存假 RPC 验证不等于真实端到端验证。
 
-## Features
+## 接入方式
 
-- Access your local Harness instance remotely from the web, a PC, or a mobile device: DSH first, with Codex, Cursor, and Antigravity support too.
-- DeepSeek Harness Desktop is ready to use after installation, with its native interface and no separate desktop conversation UI.
-- Create workspaces, configure models, and switch conversation models with the same smooth workflow as local use.
-- No public listening port or public IP is required on the Harness Host. Connect from anywhere with internet access over a bidirectional end-to-end encrypted channel.
-- Prefer P2P connections, use TURN relay nodes worldwide, and fall back to multiple Server Relays when needed.
-- Access workspace files, read-only previews, remote terminals, and authorized local development-service previews through the native Harness sidebar.
-- Remote Tool context injection supports Host and workspace discovery, Harness session creation and management, history reading, waiting for execution, interruption requests, and authorized file transfers. [Details](packages/plugin/README.md#remote-agent-tools).
-- Alongside DeepSeek Harness, access native workspaces for Codex, Cursor, Google Antigravity, Pi, OpenCode, Claude Code, Harness Agent, and other tools through ACP integrations, with remote file browsing and terminals.
-- Clients are available across Android, iOS, Web, and native DSH.
-- Multiple clients can connect to the same Harness Host simultaneously, with RPC calls and streams isolated per connection.
-
-## Supported clients
-
-| Client | Form | Status | Notes |
-| --- | --- | --- | --- |
-| DSH&nbsp;Desktop&nbsp;plugin | Remote sidebar | Supported | Install `ds-harness-remote@0.6.4`; this computer can also be the Host |
-| Web | Browser page | Supported | Open [https://dsh.r2049.cn](https://dsh.r2049.cn); reuses the native Harness interface |
-| Android | Native app | Supported | Download the APK from [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest); see the [Android guide](apps/android/README.md) |
-| DSH Go | A standout app by ccch1mneyyy | Supported | See [ccch1mneyyy/dsh-go: an Android client for DeepSeek Harness. Run it directly on your phone or control DSH on your computer remotely.](https://github.com/ccch1mneyyy/dsh-go) |
-| iOS | TestFlight beta | Beta | Not publicly released; see [issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) |
-| Browser&nbsp;extension | Chrome | Entry point only | Exchanges an already signed-in Web authorization for a separate device credential, lists online Hosts and opens the same-origin Remote Web; it does not host a conversation UI |
-| dsh-TUI | Terminal-only CLI | Planned | Integration is not part of this release and returns in a later version; the installer never creates a Web service for it automatically |
-| Linux | Cloud server | Supported | Sign in on the [official website](https://dsh.r2049.cn/) to install with one command. |
-
-Several clients can connect to the same Host at once; RPC calls and streams are isolated per connection.
-
-## Install
-
-### DeepSeek Harness Desktop support
-
-Open **Extensions / Plugin management** in DeepSeek Harness Desktop, choose installation
-from npm, and enter this package:
-
-`ds-harness-remote@0.6.4`
-
-Restart Desktop afterward. Its official `dsh` launcher can also install the pinned package
-with `dsh plugin --profile desktop add -w ds-harness-remote@0.6.4`.
-
-On DSH 0.2.2+, npm installations support version checks and updates in Plugin management, with an attempt to restore the previous version if hot updating fails. GitHub and local link installations must switch to npm first; see [online updates](docs/installation.md#online-updates-in-dsh-plugin-management).
-
-### Linux one-command installation
-
-Visit [https://dsh.r2049.cn](https://dsh.r2049.cn/), sign in, and obtain an installation authorization code to install with one command.
-
-### Native Android client
-
-Keep conversations connected across multiple workspaces at once, and use **Bot mode**, powered by [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot).
-
-Download the latest APK from [GitHub Releases](https://github.com/liguobao/ds-harness-remote/releases/latest), and sign in to the same account to see your Hosts.
-
-## DSH Go — DeepSeek Harness in your pocket: run it locally on your phone or control your computer remotely.
-
-[ccch1mneyyy/dsh-go](https://github.com/ccch1mneyyy/dsh-go) has built-in support for the ds-harness-remote protocol. You can run DeepSeek Harness locally on your phone or connect to your computer remotely.
-
-After installing the ds-harness-remote plugin in DSH Go on your phone, you can also connect to the phone’s DSH from your computer or the web and use Mobile Use seamlessly.
-
-### iOS client
-
-- [Join the beta](https://github.com/liguobao/ds-harness-remote/issues/20)
-
-## Quick start
-
-1. Open **Remote** from the DeepSeek Harness sidebar.
-2. Choose Zhihu, GitHub, or Google authorization, or sign in with an account and password. Account registration requires an invitation code; email the repository author to request one.
-3. On another device, install the same plugin in DeepSeek Harness and sign in as described in steps 1–2. Alternatively, use Remote Web, iOS, Android, or DSH Go directly without installing a plugin.
-4. Select an online Host, then choose an existing workspace or browse remote directories to open one.
-
-By default, Remote uses this project's hosted Server at [https://dsh.r2049.cn](https://dsh.r2049.cn).
-
-For self-hosting, use the repository's [minimal Server](apps/server/README.md). The current version includes WebRTC LAN/P2P/TURN coordination (TURN requires your own coturn deployment) and an encrypted Relay Server, but does not provide the full hosted Remote Web experience.
-
-## Screenshots
-
-### Desktop
-
-On another computer, select an online Host and open its workspace. The workspace opens in the native Harness interface, with the active Host and encrypted connection status in the header.
-
-<p align="center">
-  <img src="docs/images/host-list.png" alt="Remote workspace picker listing online Hosts" width="40%">
-  <img src="docs/images/remote.png" alt="A Harness conversation running through an encrypted remote connection" width="40%">
-</p>
-
-To prevent this computer from controlling other Hosts, open the Host list at [https://dsh.r2049.cn/](https://dsh.r2049.cn/) and enable **Controlled only**. This device will no longer see other devices under your account, while Web and other clients can still connect to it remotely.
-
-### Android
-
-Use text or image prompts, switch models, and access supported workspace files and terminals.
-
-<p align="center">
-  <img src="docs/images/mobile-list.jpg" alt="Android client listing online and offline computers" width="30%">
-  <img src="docs/images/image-msg.jpg" alt="Sending an image prompt from the Android client" width="30%">
-  <img src="docs/images/image-result.jpg" alt="Viewing the image response in the Android client" width="30%">
-</p>
-
-Mobile Settings includes a global **Compact conversations** switch, off by default and applied when a conversation is next opened.
-
-Supporting Hosts reduce historical tool details while preserving messages and tool status. Turn the setting off and reopen the conversation to load full history.
-
-## How it works
+以下是目标业务链路；真实网络联调仍待完成：
 
 ```text
-DSH Desktop / Remote Web / Android
-  ↔ authenticated, end-to-end encrypted channel
-Remote Plugin on the Host
-  ↔ supported Harness or optional Codex workspace support
-Harness sessions/workspaces or Codex projects
+Android 原生 Pi Web 页面
+  ↕ Remote Noise 加密通道（P2P / TURN / Relay）
+独立 Pi Web Host
+  ↕ 受限 HTTP / SSE，固定目标 127.0.0.1:30141
+现有 Pi Web + 最小桥接改动
+  ↕ 原有 SDK / Agent 实例
+原会话、工具与任务
 ```
 
-The Harness Host does not need a public listening port. Connect from anywhere with internet access over ds-harness-remote’s bidirectional end-to-end encrypted channel.
+Host 不承担模型执行，不启动原 DSH Host runtime，也不把 Pi Web 伪装成 ACP backend。Pi Web 和问答插件还需要匹配的桥接改动；本仓库保存了[可移植补丁与执行记录](docs/pi-web-remote/MINIMAL-BRIDGE-RESULTS.md)，生产尚未安装这些改动。
 
-The client switches to the selected Host’s native Harness API, keeping the original workspaces, tools, and permission flows on that computer.
+## 从哪里开始
 
-You can also edit Harness and plugin settings on the remote host. Available options depend on which settings Harness and each plugin expose through the official settings API.
+定制源码位于开发分支 [`m2/pi-web-remote`](https://github.com/DreamCatcher096/ds-harness-remote/tree/m2/pi-web-remote)，不要把 fork 的 `main` 当作本项目的定制版本：
 
-## Experimental ACP workspaces
+```sh
+git clone --branch m2/pi-web-remote --single-branch https://github.com/DreamCatcher096/ds-harness-remote.git pi-web-remote
+cd pi-web-remote
+```
 
-The Host runs local ACP-capable Agents and forwards prompts, streamed replies, and approvals through ds-harness-remote. Each Agent keeps its own workspaces and sessions; only session translation for DSH is performed, without writing to Harness storage.
+这只获取源码，不会安装依赖、注册账号或启动服务。继续开发前请先阅读：
 
-Supported backends:
+- [项目入口与当前状态](docs/pi-web-remote/README.md)
+- [实施方案](docs/pi-web-remote/IMPLEMENTATION-PLAN.md)与[验收边界](docs/pi-web-remote/ACCEPTANCE.md)
+- [原生聊天与问卷决定](docs/pi-web-remote/P3-ADR.md)、[Host 设计](docs/pi-web-remote/HOST-ADR.md)及[线协议](docs/protocol.md)
+- [源码与固定版本基线](docs/pi-web-remote/SOURCE-BASELINE.md)
+- [开发协作与安全约定](AGENTS.md)
 
-- **Codex** — connects through App Server, using the shared workspace entry.
-- **Cursor** — connects through the CLI's ACP interface.
-- **Antigravity (AGY)** — connects through an adapter for its stream-json CLI.
-- **Pi Agent (experimental)** — automatically detected after installing and configuring Pi and `pi-acp`; can be disabled in settings. Tools run with Host-user permissions, without per-tool confirmation by default.
-- **OpenCode** — connects through `opencode acp`, with workspaces and history. Session archiving requires a build with the authenticated API; unarchive is not yet available.
-- **Claude** — connects through a locally authorized `claude-agent-acp`; enable it in settings. Supports text and approvals; images are not yet supported.
-- **Hermes** — connects through `hermes acp`; enable it in settings. Supports text, images, streamed output, approvals, and model selection.
+主要代码：`apps/pi-web-host/` 为独立 Host，`apps/android/` 为 Android 客户端，`packages/protocol/` 与 `packages/client-core/` 提供协议和客户端状态机，`docs/pi-web-remote/patches/` 保存配套桥接补丁。
 
-Claude and Hermes also support direct file and terminal access, subject to the Host's workspace boundaries and terminal settings.
+保留的其他子项目和历史文档可能仍描述上游 DSH Remote 的功能、安装或发布流程；它们不是 Pi Web Remote 的可用性承诺，也不是本项目的一键安装说明。
 
-Setup and adapter development: [Agent workspace integration guide](docs/acp-integration.md).
+## 安全与开发边界
 
-Model selection for Cursor, Claude, Hermes, Pi, OpenCode, and AGY on Desktop/Android uses the Host's actual model catalog as determined by the Agent’s ACP interface.
+- 新 Host／App 使用独立身份，不借用既有 DSH 的设备身份、私钥或登录态。
+- Pi Web 目标固定为 `127.0.0.1:30141`，不扩成任意内网、CONNECT 或通用 TCP 代理；跨网业务不明文降级。
+- 断线、退出页面或重连不自动重发 prompt、问卷答案等业务写入，也不自动停止原任务。
+- 登录由用户本人完成；真实业务测试逐项确认。不在 Issue、日志或仓库中放入 token、Cookie、私钥、会话文件或完整对话。
+- 配置隔离不是 OS 沙箱；未来网页入口具有 Pi Web 本身的权限，隐藏原生按钮不构成权限隔离。
 
-Reasoning effort options depend on what the backend provides. Cursor uses a separate process per session, so model changes do not affect other conversations.
+## 上游归属与许可证
 
-## End-to-end encryption
+本项目 fork 自 [liguobao/ds-harness-remote](https://github.com/liguobao/ds-harness-remote)，开发基线固定为 [`0a0ac9a1a647a171b79b19998d24bdd43bae9ea0`](https://github.com/liguobao/ds-harness-remote/tree/0a0ac9a1a647a171b79b19998d24bdd43bae9ea0)。感谢原作者及贡献者提供的协议、加密、传输与 Android UI 基础。
 
-Harness business traffic is encrypted on the Client and decrypted only by the selected Host using the fixed `Noise_IK_25519_ChaChaPoly_SHA256` suite.
+项目沿用 [MIT 许可证](LICENSE)，保留原版权声明：`Copyright (c) 2026 DSH Remote contributors`。各子模块及第三方组件的许可证与 NOTICE 仍需遵守；重写 README 不改变这些义务。
 
-Connections must pass both same-account membership and locally pinned device identity key checks.
-
-The service can coordinate connections and observe necessary network metadata, but it cannot read session messages, prompts, tool output, workspace paths, or remote file contents.
-
-See [End-to-end encryption](docs/end-to-end-encryption.md) for the handshake, key lifecycle, visible metadata, replay protection, and security limits.
-
-## Network and transport
-
-The Host opens outbound connections only; it does not listen on a public port or require router port forwarding.
-
-Remote negotiates paths in the order `LAN -> P2P -> TURN -> Relay`.
-
-When WebRTC is unavailable or cannot connect, it falls back to the encrypted WebSocket Relay.
-
-Every path carries the same Noise ciphertext and keeps the same Host/Client identity boundary.
-
-See [Network and transport](docs/network.md) for the topology, control and data planes, NAT behavior, fallback, reconnect semantics, and current validation status.
-
-## Security
-
-- On LAN and P2P paths, data bypasses the Server except for connection coordination. TURN uses the open-source coturn server; Relay mode forwards traffic over WebSocket.
-- Session traffic is end-to-end encrypted. The service relays ciphertext without storing session plaintext or device private keys.
-- Same-account devices connect without extra confirmation; see [device trust and permissions](docs/end-to-end-encryption.md#2-设备身份与信任).
-- [Remote Tools injection](docs/remote-tools.md) — optional `remote_*` session tools; enabled by default and configurable in detailed Remote settings.
-- Interactive terminals use the Host-local `terminal.enabled` switch (on by default). They run as the Host user, independently of Agent approvals.
-- General tool RPC and remote desktop are not exposed.
-- The workspace picker lists folders only and returns bounded, read-only directory metadata.
-- Remote file preview cannot write, delete, upload, execute, or open a path in an external application.
-- Codex Remote / Agent ACP is optional, can be disabled, and follows the same encrypted Host permission boundary as the rest of Remote.
-- Removing a device revokes its credentials, membership, and active Remote connections.
-
-## FAQ
-
-**Do I need a public IP or port forwarding?**
-
-No. The Host only opens outbound connections and never listens on a public port.
-
-**Can the service read my conversations?**
-
-No. The service relays ciphertext only. Routing, authorization, presence and rate limiting require control metadata such as account and device ownership, online status, connection times and `connectionId`; prompts, conversation content, tool input and output, workspace paths and file preview contents stay unreadable.
-
-**Which machine can act as a Host?**
-
-Any signed-in Harness instance with the Remote plugin installed can act as a Host, whether on Windows, macOS, Linux, or even DSH Go.
-
-**Can several devices connect to one Host at the same time?**
-
-There is currently no limit on concurrent client connections, with RPC calls and streams isolated per connection.
-
-**Which Harness versions are supported?**
-
-The current baseline is `dsh-v0.2.2-rc.1`; `dsh-v0.2.1-rc.5` and `0.2.0` rc.2 / rc.1 remain compatible on the same official carrier. See the [compatibility guide](docs/compatibility.md).
-
-Harness `0.1.1-rc.2` ApiProxy support has been removed from the Host plugin, its bundled Remote client, and Android. Use a Host with the official Typert Remote carrier; Hosts that only provide ApiProxy or lack capability discovery are rejected, with no fallback.
-
-CodeX/ACP keep their independent data planes, and Desktop projections use Typert in memory.
-
-**Why does the Linux installer require root?**
-
-It configures a systemd system service, so the Host, Agent tools and remote terminals run with root privileges. Only expose it to trusted accounts.
-
-**Can I install the iOS app directly?**
-
-It is in TestFlight beta today and not publicly released; see [issue #20](https://github.com/liguobao/ds-harness-remote/issues/20).
-
-**How is this different from frp, a tunnel, or remote desktop?**
-
-Conventional server-based TCP port forwarding routes traffic through a Server, making its bandwidth a potential bottleneck.
-
-This project probes four connection modes in sequence to establish P2P connections even in complex network environments.
-
-Remote desktop captures the entire computer screen and reproduces it on the client, placing demands on upload and download bandwidth as well as computer performance.
-
-This project encrypts and transmits only the messages needed by the native Harness conversation interface. General tool RPC and desktop control are not exposed, and permissions and approvals remain on the Host.
-
-Tailscale, CF Turn, and UU Remote are also excellent solutions; choose whichever fits your needs.
-
-## Recommended plugins
-
-### Intelligent UI
-
-[Intelligent UI](https://github.com/dreamfarer-space/deepseek-harness-intelligent-ui) lets models answer with cards, tables, charts, and forms. The Android client renders them natively and lists the plugin under **Plugins → Remote ready**, where you can enable or disable it and edit live settings.
-
-### [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot)
-
-DS Bot is a bot plugin for DeepSeek Harness (dsh) that turns dsh into a bot. You can chat and work with the bots you create.
-
-## Documentation
-
-- [Plugin guide](packages/plugin/README.md)
-- [Installation guide](docs/installation.md)
-- [Codex Remote technical notes](docs/codex-remote.md)
-- [ACP Remote / Agent adapter notes](docs/acp-remote.md)
-- [Documentation index](docs/README.md)
-- [End-to-end encryption](docs/end-to-end-encryption.md)
-- [Network and transport](docs/network.md)
-- [Remote Protocol](docs/protocol.md)
-- [Development status and roadmap](docs/TODO.md)
-- [Changelog](docs/CHANGELOG.md)
-- [Privacy policy](docs/PRIVACY.md)
-- [Android guide](apps/android/README.md)
-- The current development baseline is `dsh-v0.2.2-rc.1`; validation scope is documented in [the compatibility guide](docs/compatibility.md).
-
-## Links
-
-- Friendly link: [DSH Go](https://github.com/ccch1mneyyy/dsh-go) — DeepSeek Harness in your pocket: run it locally on your phone or control your computer remotely. Remote integration is available.
-- Friendly link: [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) — terminal-first Harness client; Remote integration is planned for a later release.
-- Friendly link: [LINUX DO](https://linux.do/)
-- Friendly link: [Cyber Liu Kanshan](https://kanshan.r2049.cn/)
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=liguobao%2Fds-harness-remote&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=liguobao/ds-harness-remote&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=liguobao/ds-harness-remote&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=liguobao/ds-harness-remote&type=date&legend=top-left" />
- </picture>
-</a>
-
-## Project status and trademarks
-
-This is an independent community project and is not an official DeepSeek product.
-DeepSeek and related names and marks belong to their respective owners.
-
-## Connection diagnostics
-
-On Android, reproduce the problem, then open **Settings → Diagnostics → Export connection log** and choose a folder to save the `.txt` file. It contains up to 500 recent diagnostic events from the current app process; restarting the app clears the buffer. Credentials and conversation content are excluded.
-
-On the Host, enable **Debug logging** in **Plugins → Remote settings**. The setting is saved and takes effect immediately; turn it off after troubleshooting (restores `info`). Look for `[ds-harness-remote]` in the Host log, or `desktop.log` on Desktop. Manual configuration also accepts `logLevel: debug`.
-
-## License
-
-[MIT](packages/plugin/LICENSE)
-
-### Pair with DSH-Go
-
-Open Sign in → DSH-Go pairing in the local Remote settings and generate a QR code, scan and confirm on a compatible DSH-Go build, then enter the phone code on this computer. A wrong code invalidates the whole pairing. New Hosts accept incoming connections only; Device-only accounts have no Web/Admin access. Requires the full Server pairing v1 API and a DSH-Go build implementing [this integration](docs/dsh-go-pairing-integration.md). The bundled minimal Server does not support this workflow.
+Pi Web Remote 是独立派生项目，不代表 DSH Remote、Pi Web 或 DeepSeek 官方发布或背书。相关名称与商标归各自权利人所有。
