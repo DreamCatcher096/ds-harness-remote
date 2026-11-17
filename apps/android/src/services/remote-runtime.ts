@@ -61,6 +61,8 @@ export class AndroidRemoteRuntime {
     return this.client.rpc<T>(method, params, signal)
   }
   configureHistory(compact: boolean) { return this.client.configureHistory(compact) }
+  hasPiWeb() { return this.client.hasPiWeb() }
+  requirePiWeb() { return this.client.requirePiWeb() }
   requireProxy() { return this.client.requireProxy() }
   readSessionImageAttachment(sessionId: string, attachment: Record<string, unknown>, signal: AbortSignal) {
     return this.client.readSessionImageAttachment(sessionId, attachment, signal)

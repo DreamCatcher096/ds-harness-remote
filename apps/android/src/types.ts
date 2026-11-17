@@ -73,6 +73,7 @@ export interface DevicePresence {
 }
 
 export interface HostDescriptor {
+  kind?: 'pi-web'
   version: string
   cwd: string
   provider?: string

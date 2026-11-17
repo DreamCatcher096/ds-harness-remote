@@ -8,6 +8,7 @@ import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { ChatScreen } from './src/screens/chat-screen'
+import { PiWebScreen } from './src/screens/pi-web-screen'
 import { ConnectionScreen, DeviceDetailScreen } from './src/screens/device-screens'
 import { HostSwitcherSheet } from './src/screens/host-switcher-sheet'
 import { RemoteHostsScreen } from './src/screens/remote-hosts-screen'
@@ -90,6 +91,7 @@ function AppNavigator() {
   const config = useAppStore(state => state.config)
   const devices = useAppStore(state => state.devices)
   const selectedDevice = useAppStore(state => state.selectedDevice)
+  const piWebHost = useAppStore(state => state.hostDescriptor?.kind === 'pi-web')
   const hostScope = browseScope({ config, selectedDevice })
   const botMode = useBrowseMemory(state => state.hostModes[hostScope] === 'bot')
   const autoConnectHost = useBrowseMemory(state => state.autoConnectHost)
@@ -463,8 +465,9 @@ function AppNavigator() {
         />
       )}
       {route.name === 'device' && deviceForRoute === undefined && <MissingRoute onBack={() => reset({ name: 'chat' })} />}
-      {(route.name === 'chat' || startupConnection) && (
-        <ChatScreen
+      {(route.name === 'chat' || startupConnection) && (piWebHost
+        ? <PiWebScreen key={hostScope} onHosts={() => setHostSwitcherOpen(true)} />
+        : <ChatScreen
           botMode={botMode}
           botConversationId={route.name === 'chat' ? route.botConversationId : undefined}
           onBotModeChange={next => {

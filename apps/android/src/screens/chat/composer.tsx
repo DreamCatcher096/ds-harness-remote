@@ -29,6 +29,7 @@ const BACKEND_CHAT_TEXT_KEYS: Partial<Record<string, BackendChatTextKeys>> & { h
   hermes: { generating: 'hermesGenerating', messageLabel: 'hermesMessageLabel', placeholder: 'hermesPlaceholder', policyHint: 'hermesPolicyHint' },
   opencode: { generating: 'opencodeGenerating', messageLabel: 'opencodeMessageLabel', placeholder: 'opencodePlaceholder', policyHint: 'opencodePolicyHint' },
   pi: { generating: 'piGenerating', messageLabel: 'piMessageLabel', placeholder: 'piPlaceholder', policyHint: 'piPolicyHint' },
+  'pi-web': { generating: 'piGenerating', messageLabel: 'piMessageLabel', placeholder: 'piPlaceholder', policyHint: 'piPolicyHint' },
   antigravity: { generating: 'antigravityGenerating', messageLabel: 'antigravityMessageLabel', placeholder: 'antigravityPlaceholder', policyHint: 'antigravityPolicyHint' },
 }
 
@@ -36,11 +37,15 @@ const BACKEND_CHAT_TEXT_KEYS: Partial<Record<string, BackendChatTextKeys>> & { h
 const LONG_DRAFT_HINT = 12_000
 
 type Props = {
-  backend: RemoteSession['backend']
+  backend: RemoteSession['backend'] | 'pi-web'
+  policyHint?: string
+  runningHint?: string
+  replyStatus?: string
   draft: string
   quotes?: string[]
   onRemoveQuote?: (index: number) => void
-  input: ReturnType<typeof useChatMentions>
+  input: Pick<ReturnType<typeof useChatMentions>, 'composerInputRef' | 'onChangeText'>
+    & Partial<Pick<ReturnType<typeof useChatMentions>, 'mentionType' | 'mentionGroups' | 'selection' | 'closeMention' | 'onSelectionChange'>>
   replyActive: boolean
   stopping: boolean
   compactRunning: boolean
@@ -54,21 +59,21 @@ type Props = {
   promptsPickerOpen: boolean
   onExpand: () => void
   onOpenExpand?: () => void
-  onOpenActions: () => void
-  onOpenPrompts: () => void
+  onOpenActions?: () => void
+  onOpenPrompts?: () => void
   onSubmit: () => void
   onStop: () => void
 }
 
-export function ChatComposer({ backend, draft, quotes, onRemoveQuote, input, replyActive, stopping, compactRunning,
+export function ChatComposer({ backend, policyHint, runningHint, replyStatus, draft, quotes, onRemoveQuote, input, replyActive, stopping, compactRunning,
   hasComposerContent, connected, composerDisabled, sendDisabled, compactComposer,
   composerInputMaxHeight, model, promptsPickerOpen, onExpand, onOpenExpand, onOpenActions, onOpenPrompts, onSubmit, onStop }: Props) {
   const { colors } = useTheme()
   const styles = useThemedStyles(createStyles)
-  const { composerInputRef, mentionType, mentionGroups, selection, closeMention, onChangeText, onSelectionChange } = input
+  const { composerInputRef, mentionType = null, mentionGroups = [], selection, closeMention, onChangeText, onSelectionChange } = input
   const draftSegments = useMemo(() => splitDraftSegments(draft), [draft])
   const backendTextKeys = BACKEND_CHAT_TEXT_KEYS[backend ?? 'harness'] ?? BACKEND_CHAT_TEXT_KEYS.harness
-  const replyStatusLabel = stopping ? strings.chat.stopping : strings.chat[backendTextKeys.generating]
+  const replyStatusLabel = stopping ? strings.chat.stopping : replyStatus ?? strings.chat[backendTextKeys.generating]
   return <>
     {replyActive && (
       <View
@@ -84,16 +89,16 @@ export function ChatComposer({ backend, draft, quotes, onRemoveQuote, input, rep
     )}
     <View style={{ position: 'relative', zIndex: 20, elevation: 20 }}>
       {mentionType !== null && (
-        <MentionPopover groups={mentionGroups} onDismiss={closeMention} emptyText={strings.mention.noMatches} />
+        <MentionPopover groups={mentionGroups} onDismiss={() => closeMention?.()} emptyText={strings.mention.noMatches} />
       )}
       {compactRunning ? <View style={[styles.composerCard, styles.runningComposer]}>
-        <Pressable accessibilityRole="button" accessibilityLabel={strings.chat.moreActions} onPress={onOpenActions}
+        {onOpenActions && <Pressable accessibilityRole="button" accessibilityLabel={strings.chat.moreActions} onPress={onOpenActions}
           style={({ pressed }) => [styles.plusButton, pressed && styles.plusPressed]}>
           <Plus size={22} color={colors.ink} />
-        </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel={strings.sessionActivity.composeRunning}
+        </Pressable>}
+        <Pressable accessibilityRole="button" accessibilityLabel={runningHint ?? strings.sessionActivity.composeRunning}
           onPress={onExpand} style={styles.runningComposerPrompt}>
-          <Text style={styles.runningComposerText} numberOfLines={1}>{strings.sessionActivity.composeRunning}</Text>
+          <Text style={styles.runningComposerText} numberOfLines={1}>{runningHint ?? strings.sessionActivity.composeRunning}</Text>
         </Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel={strings.chat.stop} disabled={stopping}
           accessibilityState={{ disabled: stopping, busy: stopping }} onPress={onStop}
@@ -152,7 +157,7 @@ export function ChatComposer({ backend, draft, quotes, onRemoveQuote, input, rep
           </TextInput>
         </View>
         <View style={styles.composerControls}>
-          <Pressable
+          {onOpenActions && <Pressable
             accessibilityRole="button"
             accessibilityLabel={strings.chat.moreActions}
             accessibilityState={{ disabled: composerDisabled }}
@@ -162,8 +167,8 @@ export function ChatComposer({ backend, draft, quotes, onRemoveQuote, input, rep
             style={({ pressed }) => [styles.plusButton, pressed && styles.plusPressed, composerDisabled && styles.plusDisabled]}
           >
             <Plus size={20} color={connected ? colors.ink : colors.disabled} />
-          </Pressable>
-          <Pressable
+          </Pressable>}
+          {onOpenPrompts && <Pressable
             accessibilityRole="button"
             accessibilityLabel={strings.chat.quickPrompts}
             accessibilityState={{ disabled: composerDisabled, expanded: promptsPickerOpen }}
@@ -173,7 +178,7 @@ export function ChatComposer({ backend, draft, quotes, onRemoveQuote, input, rep
             style={({ pressed }) => [styles.plusButton, pressed && styles.plusPressed, composerDisabled && styles.plusDisabled]}
           >
             <Zap size={18} color={connected ? colors.ink : colors.disabled} strokeWidth={1.9} />
-          </Pressable>
+          </Pressable>}
           <View style={styles.composerSpacer} />
           {model.available && (
             <Pressable accessibilityRole="button" accessibilityLabel={strings.chat.selectModel} onPress={model.onOpen} style={styles.modelChip}>
@@ -234,7 +239,7 @@ export function ChatComposer({ backend, draft, quotes, onRemoveQuote, input, rep
         composer is visible; keep the privacy note for roomier windows. */}
     {!compactComposer && (
       <Text style={styles.composerHint}>
-        {strings.chat[backendTextKeys.policyHint]}
+        {policyHint ?? strings.chat[backendTextKeys.policyHint]}
       </Text>
     )}
   </>

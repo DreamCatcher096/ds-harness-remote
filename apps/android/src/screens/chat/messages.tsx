@@ -326,7 +326,7 @@ function AssistantMessageCallout({ item }: { item: ChatMessage }) {
   )
 }
 
-function MessageBubble({ item, compact, artifacts, editedFiles, onFilePress, onSendPrompt }: {
+export function MessageBubble({ item, compact, artifacts, editedFiles, onFilePress, onSendPrompt }: {
   item: ChatMessage
   compact: boolean
   artifacts?: UiArtifact[]
@@ -452,7 +452,7 @@ function ReasoningDisclosure({ item }: { item: ChatMessage }) {
   )
 }
 
-function ToolRow({ item: original, compact }: { item: ToolActivity; compact: boolean }) {
+export function ToolRow({ item: original, compact }: { item: ToolActivity; compact: boolean }) {
   const [loaded, setLoaded] = useState<ToolActivity>()
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [detailError, setDetailError] = useState<string>()
@@ -717,7 +717,7 @@ export function QueueDock({ items }: { items: { id?: string; rpcId?: string; pre
   )
 }
 
-export function WelcomeMessage() {
+export function WelcomeMessage({ badge = zhCN.chat.welcomeBadge }: { badge?: string } = {}) {
   const { colors } = useTheme()
   const styles = useThemedStyles(createStyles)
   return (
@@ -732,7 +732,7 @@ export function WelcomeMessage() {
       <View style={styles.welcomeRow}>
         <Text style={styles.welcomeSlogan}>{zhCN.chat.welcomeSlogan}</Text>
         <View style={styles.welcomeBadge}>
-          <Text style={styles.welcomeBadgeText}>{zhCN.chat.welcomeBadge}</Text>
+          <Text style={styles.welcomeBadgeText}>{badge}</Text>
         </View>
       </View>
     </View>

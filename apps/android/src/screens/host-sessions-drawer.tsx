@@ -1850,6 +1850,8 @@ export function HostSessionsDrawer({
   )
 }
 
+// Pi Web 只复用展示样式，不调用本抽屉的 ACP 会话／工作区操作。
+export { createStyles as createHostSessionsDrawerStyles }
 const createStyles = (colors: ThemeColors) =>
   StyleSheet.create({
     overlayContainer: { flex: 1 },

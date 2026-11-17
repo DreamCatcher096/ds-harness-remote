@@ -23,6 +23,7 @@ vi.mock('../src/services/connection', async () => {
   const { BotRemoteClient } = await import('../src/services/bot-catalog')
   return { AndroidRemoteConnection: class {
     async configureHistory() {}
+    hasPiWeb() { return false }
     requireProxy() { return proxy }
     requireBotClient() { return new BotRemoteClient(botDispatch, () => proxy.sessionList(), () => undefined) }
     connect = transport.connect

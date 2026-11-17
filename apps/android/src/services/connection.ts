@@ -1,4 +1,5 @@
-import { AgentAcpClient, CodexRemoteClient, HarnessAlphaClient, RemoteClientCore, RemoteTypertGateway, probeRemoteHostFeatures, remoteWorkspaceTypeAvailable, type RemoteHostFeatures } from '@dsh-remote/client-core'
+import { PiWebRemoteClient, AgentAcpClient, CodexRemoteClient, HarnessAlphaClient, RemoteClientCore, RemoteTypertGateway, probeRemoteHostFeatures, remoteWorkspaceTypeAvailable, type RemoteHostFeatures } from '@dsh-remote/client-core'
+import { createNativeRpcId } from './rpc-id'
 import { classifyControlClose } from '@dsh-remote/protocol'
 import { AdaptiveTransport, type AdaptiveConnectionDetails, type RtcIceServer } from '@dsh-remote/webrtc'
 import { websocketUrl } from '../lib/server-url'
@@ -28,6 +29,8 @@ export class AndroidRemoteConnection {
   private compactHistorySupported = false
   private pluginRouteSupported = false
   private core?: RemoteClientCore
+  private piWeb?: PiWebRemoteClient
+  private piWebScope?: string
   private proxy?: RemoteHarnessClient
   private codex?: CodexRemoteClient
   private cursor?: AgentAcpClient
@@ -139,6 +142,7 @@ export class AndroidRemoteConnection {
         void this.closeMux?.(false)
         this.closeMux = undefined
         this.core = undefined
+        this.piWeb?.suspend()
         this.proxy = undefined
         this.codex = undefined
         this.codexAvailable = false
@@ -157,6 +161,26 @@ export class AndroidRemoteConnection {
       // second relay-only connection doubled every fallback into two full
       // handshakes and added 10s+ to mobile connections.
       const core = await connectCore(false)
+      try {
+        const description = await core.rpc<{ kind?: string; capabilities?: string[] }>('pi-web.describe', {})
+        if (description.kind !== 'pi-web' || !description.capabilities?.includes('pi-web.chat.v1')) throw new Error('PI_WEB_CHAT_UNSUPPORTED')
+        if (attempt !== this.connectionAttempt || this.core !== core) throw new Error('The connection attempt was superseded.')
+        const scope = JSON.stringify([baseUrl, identity.deviceId, host.deviceId, host.identityKey, host.membershipId])
+        if (this.piWeb && this.piWebScope === scope) this.piWeb.reconnect(core)
+        else {
+          this.piWeb?.close()
+          this.piWeb = new PiWebRemoteClient(core, createNativeRpcId)
+          this.piWebScope = scope
+        }
+        this.scheduleHealthCheck(core)
+        return
+      } catch (error) {
+        // 只有不存在此方法才尝试原 Harness；坏能力／网络错误不兼容降级。
+        if ((error as { code?: string })?.code !== 'METHOD_NOT_FOUND') throw error
+      }
+      this.piWeb?.close()
+      this.piWeb = undefined
+      this.piWebScope = undefined
       const features = await probeRemoteHostFeatures(core, host.clientVersion)
       if (attempt !== this.connectionAttempt || this.core !== core) throw new Error('The connection attempt was superseded.')
       const emitFrame = (frame: MuxStreamFrame) => {
@@ -202,10 +226,17 @@ export class AndroidRemoteConnection {
     }
   }
 
+  hasPiWeb(): boolean { return this.core !== undefined && this.piWeb !== undefined }
+  requirePiWeb(): PiWebRemoteClient {
+    if (!this.core || !this.piWeb) throw new Error('PI_WEB_UNAVAILABLE')
+    return this.piWeb
+  }
+
   /** Reprobe readiness on workspace refresh so Host backend switches need no reconnect. */
   async refreshBackends(): Promise<void> {
     if (this.core === undefined) throw new Error(strings.runtime.connectHostFirst)
     const core = this.core
+    if (this.piWeb) { await this.piWeb.discover(); return }
     const features = await probeRemoteHostFeatures(core)
     if (this.core !== core) return
     this.applyBackendFeatures(core, features)
@@ -384,7 +415,7 @@ export class AndroidRemoteConnection {
   private async probeHealth(core: RemoteClientCore): Promise<boolean> {
     try {
       // Existing authenticated, encrypted capability RPC; no new wire heartbeat.
-      await core.rpc('harness.transport.describe', {}, undefined, { timeoutMs: 5_000 })
+      await core.rpc(this.piWeb ? 'pi-web.describe' : 'harness.transport.describe', {}, undefined, { timeoutMs: 5_000 })
       return this.core === core
     } catch {
       return false
@@ -450,6 +481,7 @@ export class AndroidRemoteConnection {
     this.unsubscribeArchived?.()
     this.unsubscribeArchived = undefined
     this.transport = undefined
+    this.piWeb?.suspend()
     this.proxy = undefined
     this.codex = undefined
     this.codexAvailable = false

@@ -11,6 +11,10 @@ class FakeCore {
 
   async rpc(method: string, params?: unknown): Promise<unknown> {
     this.rpcCalls.push({ method, params })
+    if (method === 'pi-web.describe') {
+      if (testState.capabilities.includes('pi-web.chat.v1')) return { kind: 'pi-web', capabilities: testState.capabilities }
+      throw Object.assign(new Error('Unsupported method'), { code: 'METHOD_NOT_FOUND' })
+    }
     if (method === 'harness.transport.describe') return { capabilities: testState.capabilities,
       ...(testState.workspaceTypes === undefined ? {} : { workspaceTypes: testState.workspaceTypes }) }
     if (method === 'harness.remote.stream.open') return {}
@@ -107,6 +111,25 @@ afterEach(async () => {
   await Promise.all(testState.cores.map(core => core.close()))
   vi.useRealTimers()
 })
+
+  it('Pi Web 独立 backend 不创建 Harness／ACP；同主机重连可保留 unknown，换主机隔离', async () => {
+    testState.capabilities = ['pi-web.chat.v1']
+    const connection = new AndroidRemoteConnection()
+    await connection.connect('https://server.example.com', identity, host, 'synthetic', () => undefined)
+    const client = connection.requirePiWeb()
+    expect(connection.hasPiWeb()).toBe(true)
+    expect(() => connection.requireProxy()).toThrow()
+    expect(connection.hasPi()).toBe(false)
+    expect(testState.cores[0]!.rpcCalls.some(call => call.method === 'harness.transport.describe')).toBe(false)
+    await connection.close()
+    expect(connection.hasPiWeb()).toBe(false)
+    await connection.connect('https://server.example.com', identity, host, 'synthetic', () => undefined)
+    expect(connection.requirePiWeb()).toBe(client)
+    await connection.close()
+    await connection.connect('https://server.example.com', identity, { ...host, deviceId: 'other', identityKey: 'other-key' }, 'synthetic', () => undefined)
+    expect(connection.requirePiWeb()).not.toBe(client)
+    await connection.close()
+  })
 
   it('gives TURN-only attempts an allocation budget without slowing automatic routing', async () => {
     await runScenarios([

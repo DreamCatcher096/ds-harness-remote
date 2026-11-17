@@ -44,7 +44,7 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
         connectionStage: 'authenticating',
         connectionProbeOrder: [],
         connectionNetworkDetails: undefined,
-        hostDescriptor: undefined,
+        hostDescriptor: sameHost ? state.hostDescriptor : undefined,
         codexAvailable: false,
         cursorAvailable: false,
         antigravityAvailable: false,
@@ -147,15 +147,18 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
         )
         if (generation !== runtime.connectionGeneration) return false
         set({ connectionStage: 'loading' })
-        const proxy = runtime.connection.requireProxy()
-        // Catalogs belong to the category the user opens, not connection setup.
-        const hostDescriptor = await proxy.hostDescribe()
+        // Pi Web 是独立 backend，不构造 Harness／ACP proxy。
+        const piWeb = runtime.connection.hasPiWeb()
+        const hostDescriptor = piWeb
+          ? { kind: 'pi-web' as const, version: '源码（未发布）', cwd: '', attachedSessions: 0, canOpenPath: false }
+          : await runtime.connection.requireProxy().hostDescribe()
         const connectionNetworkDetails = await runtime.connection.getNetworkDetails().catch(() => undefined)
         if (generation !== runtime.connectionGeneration) return false
         const connectedStats = runtime.connection.getStats() ?? { mode: 'Relay', connected: true }
         runtime.webRtcFallbackStreak = 0
         set({
           hostDescriptor,
+          ...(piWeb ? { selectedSession: undefined } : {}),
           codexAvailable: runtime.connection.hasCodex(),
           cursorAvailable: runtime.connection.hasCursor(),
           antigravityAvailable: runtime.connection.hasAntigravity(),
